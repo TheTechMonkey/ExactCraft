@@ -1,0 +1,42 @@
+# ExactCraft English translation.
+# 
+msgid ""
+msgstr ""
+"Project-Id-Version: ExactCraft\n"
+"POT-Creation-Date: 2026-08-09 16:45\n"
+"PO-Revision-Date: 2026-08-09 16:45\n"
+"Language-Team: \n"
+"Language: nl\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Plural-Forms: nplurals=2; plural=(n != 1);\n"
+
+#. Key:	MaximumInitial
+#. SourceLocation:	Mods/ExactCraft/Source/ExactCraft/Private/ExactCraftControlRow.cpp(151)
+#: Mods/ExactCraft/Source/ExactCraft/Private/ExactCraftControlRow.cpp(151)
+msgctxt "ExactCraft,MaximumInitial"
+msgid "MAX 0"
+msgstr "MAX 0"
+
+#. Key:	MaximumTooltip
+#. SourceLocation:	Mods/ExactCraft/Source/ExactCraft/Private/ExactCraftControlRow.cpp(154)
+#: Mods/ExactCraft/Source/ExactCraft/Private/ExactCraftControlRow.cpp(154)
+msgctxt "ExactCraft,MaximumTooltip"
+msgid "Craft the maximum currently affordable amount"
+msgstr "Produceer de maximaal beschikbare hoeveelheid"
+
+#. Key:	MaximumFormat
+#. SourceLocation:	Mods/ExactCraft/Source/ExactCraft/Private/ExactCraftControlRow.cpp(233)
+#: Mods/ExactCraft/Source/ExactCraft/Private/ExactCraftControlRow.cpp(233)
+msgctxt "ExactCraft,MaximumFormat"
+msgid "MAX {0}"
+msgstr "MAX {0}"
+
+#. Key:	InfinityTooltip
+#. SourceLocation:	Mods/ExactCraft/Source/ExactCraft/Private/ExactCraftControlRow.cpp(73)
+#: Mods/ExactCraft/Source/ExactCraft/Private/ExactCraftControlRow.cpp(73)
+msgctxt "ExactCraft,InfinityTooltip"
+msgid "Craft continuously"
+msgstr "Continu produceren"
+
