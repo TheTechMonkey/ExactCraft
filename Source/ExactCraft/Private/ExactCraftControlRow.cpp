@@ -41,6 +41,8 @@ void UExactCraftControlRow::InitializeFor(
 	UFGManufacturingButton* InButton)
 {
 	WorkBench = InWorkBench;
+	ManufacturingButton = InButton;
+	LastRecipe = IsValid(InWorkBench) ? InWorkBench->GetCurrentRecipe() : nullptr;
 	UWidgetTree* Tree = GetTypedOuter<UWidgetTree>();
 	if (!Tree || !IsValid(InButton)) return;
 
@@ -125,7 +127,10 @@ void UExactCraftControlRow::InitializeFor(
 	CycleReadout->SetText(FText::FromString(TEXT("\u221e")));
 	CycleReadout->SetJustification(ETextJustify::Center);
 	CycleReadout->SetSelectAllTextWhenFocused(true);
-	CycleReadout->SetClearKeyboardFocusOnCommit(false);
+	// Let Enter perform a normal text-box commit and return focus to the
+	// crafting screen. Keeping focus here prevents Enter from completing the
+	// edit reliably because the workbench also handles keyboard crafting input.
+	CycleReadout->SetClearKeyboardFocusOnCommit(true);
 	CycleReadout->SetIsReadOnly(false);
 	CycleReadout->SetForegroundColor(FLinearColor(1.0f, 0.60f, 0.10f, 1.0f));
 	FSlateFontInfo ReadoutFont = CycleReadout->WidgetStyle.TextStyle.Font;
@@ -181,6 +186,15 @@ void UExactCraftControlRow::BeginDestroy()
 	Super::BeginDestroy();
 }
 
+void UExactCraftControlRow::HandleRecipeChanged(const TSubclassOf<UFGRecipe> NewRecipe)
+{
+	LastRecipe = NewRecipe;
+	RequestedCycles = 0;
+	MaximumCycles = -1;
+	ExactCraft::Reset(WorkBench);
+	RefreshMaximum();
+}
+
 void UExactCraftControlRow::HandleManufacturePressed(float)
 {
 	if (RequestedCycles > 0)
@@ -205,21 +219,47 @@ void UExactCraftControlRow::HandleMaximumClicked()
 	ApplyRequestedCycles(MaximumCycles);
 }
 
-void UExactCraftControlRow::HandleValueCommitted(const FText& Text, ETextCommit::Type)
+void UExactCraftControlRow::HandleValueCommitted(const FText& Text, const ETextCommit::Type CommitMethod)
 {
 	const FString Value = Text.ToString().TrimStartAndEnd();
 	if (Value.IsEmpty() || Value == TEXT("\u221e") || Value.Equals(TEXT("inf"), ESearchCase::IgnoreCase))
 	{
 		ApplyRequestedCycles(0);
-		return;
 	}
-	ApplyRequestedCycles(FMath::Clamp(FCString::Atoi(*Value), 0, MaximumCycles));
+	else
+	{
+		ApplyRequestedCycles(FMath::Clamp(FCString::Atoi(*Value), 0, MaximumCycles));
+	}
+	// ClearKeyboardFocusOnCommit handles the text field itself. On Enter, return
+	// focus to the vanilla manufacturing control on the next tick so Space works
+	// immediately without making the readout read-only or requiring another click.
+	if (CommitMethod == ETextCommit::OnEnter && GetWorld())
+	{
+		GetWorld()->GetTimerManager().SetTimerForNextTick(FTimerDelegate::CreateWeakLambda(this, [this]
+		{
+			if (IsValid(ManufacturingButton))
+			{
+				ManufacturingButton->SetKeyboardFocus();
+			}
+		}));
+	}
 }
 
 void UExactCraftControlRow::RefreshMaximum()
 {
+	const TSubclassOf<UFGRecipe> CurrentRecipe = IsValid(WorkBench)
+		? WorkBench->GetCurrentRecipe()
+		: nullptr;
+	const bool bRecipeChanged = CurrentRecipe != LastRecipe;
+	if (bRecipeChanged)
+	{
+		LastRecipe = CurrentRecipe;
+		RequestedCycles = 0;
+		ExactCraft::Reset(WorkBench);
+	}
+
 	const int32 NewMaximum = ExactCraft::GetMaximumCraftableCycles(WorkBench);
-	if (NewMaximum == MaximumCycles) return;
+	if (!bRecipeChanged && NewMaximum == MaximumCycles) return;
 	MaximumCycles = NewMaximum;
 	bUpdatingControls = true;
 	CycleSlider->SetMaxValue(FMath::Max(1.0f, static_cast<float>(MaximumCycles)));

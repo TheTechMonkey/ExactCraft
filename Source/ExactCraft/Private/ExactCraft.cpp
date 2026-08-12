@@ -22,6 +22,7 @@ namespace ExactCraft
 	struct FCraftRequest
 	{
 		TWeakObjectPtr<UFGManufacturingButton> Button;
+		TWeakObjectPtr<UExactCraftControlRow> ControlRow;
 		int32 RemainingCycles = 0;
 	};
 
@@ -75,6 +76,7 @@ namespace ExactCraft
 
 		UExactCraftControlRow* Row = Tree->ConstructWidget<UExactCraftControlRow>();
 		Row->InitializeFor(WorkBench, Button);
+		Requests.FindOrAdd(WorkBench).ControlRow = Row;
 
 		Target->AddChild(Row);
 		if (UOverlaySlot* OverlaySlot = Cast<UOverlaySlot>(Row->Slot))
@@ -163,6 +165,18 @@ namespace ExactCraft
 			Request->RemainingCycles = 0;
 		}
 	}
+
+	void RecipeChanged(UFGWorkBench* WorkBench, const TSubclassOf<UFGRecipe> Recipe)
+	{
+		Reset(WorkBench);
+		if (FCraftRequest* Request = Requests.Find(WorkBench))
+		{
+			if (UExactCraftControlRow* Row = Request->ControlRow.Get())
+			{
+				Row->HandleRecipeChanged(Recipe);
+			}
+		}
+	}
 }
 
 void FExactCraftModule::StartupModule()
@@ -184,9 +198,9 @@ void FExactCraftModule::StartupModule()
 
 	SUBSCRIBE_METHOD_AFTER(
 		UFGWorkBench::SetRecipe,
-		[](UFGWorkBench* WorkBench, TSubclassOf<UFGRecipe>)
+		[](UFGWorkBench* WorkBench, TSubclassOf<UFGRecipe> Recipe)
 		{
-			ExactCraft::Reset(WorkBench);
+			ExactCraft::RecipeChanged(WorkBench, Recipe);
 		});
 #endif
 }

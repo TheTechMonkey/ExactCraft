@@ -6,6 +6,7 @@
 
 class UEditableTextBox;
 class UFGManufacturingButton;
+class UFGRecipe;
 class UFGWorkBench;
 class USlider;
 class UTextBlock;
@@ -17,6 +18,7 @@ class EXACTCRAFT_API UExactCraftControlRow final : public UBorder
 
 public:
 	void InitializeFor(UFGWorkBench* InWorkBench, UFGManufacturingButton* InButton);
+	void HandleRecipeChanged(TSubclassOf<UFGRecipe> NewRecipe);
 	virtual void BeginDestroy() override;
 
 private:
@@ -46,6 +48,9 @@ private:
 	TObjectPtr<UFGWorkBench> WorkBench;
 
 	UPROPERTY()
+	TObjectPtr<UFGManufacturingButton> ManufacturingButton;
+
+	UPROPERTY()
 	TObjectPtr<USlider> CycleSlider;
 
 	UPROPERTY()
@@ -55,6 +60,7 @@ private:
 	TObjectPtr<UTextBlock> MaximumLabel;
 
 	FTimerHandle RefreshTimer;
+	TSubclassOf<UFGRecipe> LastRecipe;
 	int32 MaximumCycles = 0;
 	int32 RequestedCycles = 0;
 	bool bUpdatingControls = false;
