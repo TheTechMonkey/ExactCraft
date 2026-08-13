@@ -8,6 +8,7 @@
 #include "Components/VerticalBox.h"
 #include "Components/VerticalBoxSlot.h"
 #include "ExactCraftControlRow.h"
+#include "ExactCraftConfiguration.h"
 #include "ExactCraftInternal.h"
 #include "FGInventoryComponent.h"
 #include "FGRecipe.h"
@@ -24,6 +25,7 @@ namespace ExactCraft
 		TWeakObjectPtr<UFGManufacturingButton> Button;
 		TWeakObjectPtr<UExactCraftControlRow> ControlRow;
 		int32 RemainingCycles = 0;
+		bool bLimitedRequestActive = false;
 	};
 
 	static TMap<TWeakObjectPtr<UFGWorkBench>, FCraftRequest> Requests;
@@ -47,6 +49,11 @@ namespace ExactCraft
 			return;
 		}
 		Requests.FindOrAdd(WorkBench).Button = Button;
+		UE_LOG(
+			LogExactCraft,
+			Display,
+			TEXT("Manual crafting speed is %.2fx"),
+			GetCraftingSpeedMultiplier(WorkBench));
 
 		UPanelWidget* Parent = Cast<UPanelWidget>(Button->GetParent());
 		UWidgetTree* Tree = Button->GetTypedOuter<UWidgetTree>();
@@ -107,6 +114,7 @@ namespace ExactCraft
 			return;
 		}
 		Request.RemainingCycles = RequestedCycles;
+		Request.bLimitedRequestActive = true;
 	}
 
 	int32 GetMaximumCraftableCycles(UFGWorkBench* WorkBench)
@@ -144,18 +152,29 @@ namespace ExactCraft
 		return FMath::Max(0, Cycles);
 	}
 
-	void HandleCraftCompleted(UFGWorkBench* WorkBench)
+	bool AllowCraftCompletion(UFGWorkBench* WorkBench)
 	{
 		FCraftRequest* Request = Requests.Find(WorkBench);
-		if (!Request || Request->RemainingCycles <= 0)
+		if (!Request || !Request->bLimitedRequestActive)
 		{
-			return;
+			return true;
 		}
+		if (Request->RemainingCycles <= 0)
+		{
+			return false;
+		}
+
 		--Request->RemainingCycles;
 		if (Request->RemainingCycles == 0)
 		{
 			InvokeButtonFunction(Request->Button.Get(), TEXT("OnReleasedButton"));
 		}
+		return true;
+	}
+
+	float GetCraftingSpeedMultiplier(UFGWorkBench* WorkBench)
+	{
+		return FExactCraftConfigurationStruct::GetCraftingSpeedMultiplier(WorkBench);
 	}
 
 	void Reset(UFGWorkBench* WorkBench)
@@ -163,6 +182,7 @@ namespace ExactCraft
 		if (FCraftRequest* Request = Requests.Find(WorkBench))
 		{
 			Request->RemainingCycles = 0;
+			Request->bLimitedRequestActive = false;
 		}
 	}
 
@@ -189,11 +209,28 @@ void FExactCraftModule::StartupModule()
 			ExactCraft::RegisterManufacturingButton(WorkBench, Button);
 		});
 
-	SUBSCRIBE_METHOD_AFTER(
-		UFGWorkBench::RemoveIngredientsAndAwardRewards,
-		[](UFGWorkBench* WorkBench, UFGInventoryComponent*, TSubclassOf<UFGRecipe>)
+	// Stop the vanilla completion exactly at the requested amount.
+	SUBSCRIBE_METHOD(
+		UFGWorkBench::CraftComplete,
+		[](auto& Scope, UFGWorkBench* WorkBench)
 		{
-			ExactCraft::HandleCraftCompleted(WorkBench);
+			// The original method runs automatically unless a hook cancels it.
+			// Only block completions beyond the selected exact quantity.
+			if (!ExactCraft::AllowCraftCompletion(WorkBench))
+			{
+				Scope.Cancel();
+			}
+		});
+
+	// Preserve the vanilla workbench process and apply one constant configured
+	// multiplier. 1x is vanilla speed and 20x is the configurable ceiling.
+	SUBSCRIBE_METHOD(
+		UFGWorkBench::TickProducing,
+		[](auto& Scope, UFGWorkBench* WorkBench, float DeltaSeconds)
+		{
+			Scope(
+				WorkBench,
+				DeltaSeconds * ExactCraft::GetCraftingSpeedMultiplier(WorkBench));
 		});
 
 	SUBSCRIBE_METHOD_AFTER(

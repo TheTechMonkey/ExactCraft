@@ -211,6 +211,7 @@ void UExactCraftControlRow::HandleSliderChanged(const float Value)
 
 void UExactCraftControlRow::HandleInfinityClicked()
 {
+	ExactCraft::Reset(WorkBench);
 	ApplyRequestedCycles(0);
 }
 
