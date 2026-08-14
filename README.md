@@ -12,8 +12,9 @@ Select a recipe, choose an exact number of crafting cycles with the slider or nu
 - Infinity mode for vanilla continuous crafting
 - MAX shortcut for the maximum currently affordable amount
 - Craft Bench and Equipment Workshop support
+- Configurable whole-number manual crafting speeds from 1x to 20x
 - 28 localized tooltip languages
-- No configuration or save-game changes
+- No save-game changes
 
 ## Quantity behavior
 
@@ -21,7 +22,7 @@ The selected value is the number of recipe crafting cycles, not necessarily the 
 
 ## Requirements
 
-- Satisfactory 1.2 (game build 495413 or newer)
+- Satisfactory 1.2.4 (game build 502094 or newer)
 - Satisfactory Mod Loader 3.12 or newer
 
 ## Building

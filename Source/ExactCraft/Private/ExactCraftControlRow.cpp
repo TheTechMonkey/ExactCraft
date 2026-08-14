@@ -10,6 +10,7 @@
 #include "Components/Slider.h"
 #include "Components/TextBlock.h"
 #include "Engine/Texture2D.h"
+#include "ExactCraft.h"
 #include "ExactCraftInternal.h"
 #include "FGWorkBench.h"
 #include "TimerManager.h"
@@ -197,6 +198,12 @@ void UExactCraftControlRow::HandleRecipeChanged(const TSubclassOf<UFGRecipe> New
 
 void UExactCraftControlRow::HandleManufacturePressed(float)
 {
+	UE_LOG(
+		LogExactCraft,
+		Display,
+		TEXT("Craft started: requested cycles=%d, configured speed=%.2fx"),
+		RequestedCycles,
+		ExactCraft::GetCraftingSpeedMultiplier(WorkBench));
 	if (RequestedCycles > 0)
 	{
 		ExactCraft::Begin(WorkBench, RequestedCycles);
@@ -265,10 +272,9 @@ void UExactCraftControlRow::RefreshMaximum()
 	bUpdatingControls = true;
 	CycleSlider->SetMaxValue(FMath::Max(1.0f, static_cast<float>(MaximumCycles)));
 	CycleSlider->SetStepSize(1.0f / FMath::Max(1.0f, static_cast<float>(MaximumCycles)));
-	if (RequestedCycles > MaximumCycles)
-	{
-		RequestedCycles = MaximumCycles;
-	}
+	// The affordable maximum naturally falls while crafting. Do not rewrite the
+	// user's selection as ingredients are consumed; doing so made the slider and
+	// typed quantity appear to drift or refuse to stay committed.
 	CycleSlider->SetValue(static_cast<float>(RequestedCycles));
 	bUpdatingControls = false;
 	MaximumLabel->SetText(FText::Format(LOCTEXT("MaximumFormat", "MAX {0}"), MaximumCycles));

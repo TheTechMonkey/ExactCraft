@@ -10,6 +10,7 @@
 #include "ExactCraftControlRow.h"
 #include "ExactCraftConfiguration.h"
 #include "ExactCraftInternal.h"
+#include "FGCharacterPlayer.h"
 #include "FGInventoryComponent.h"
 #include "FGRecipe.h"
 #include "FGWorkBench.h"
@@ -222,15 +223,52 @@ void FExactCraftModule::StartupModule()
 			}
 		});
 
-	// Preserve the vanilla workbench process and apply one constant configured
-	// multiplier. 1x is vanilla speed and 20x is the configurable ceiling.
+	// Replace the workbench progress tick so multipliers above 1x can complete
+	// multiple recipe cycles in one frame. Scaling Produce's argument is not
+	// linear because vanilla Produce only completes one cycle per invocation.
 	SUBSCRIBE_METHOD(
 		UFGWorkBench::TickProducing,
 		[](auto& Scope, UFGWorkBench* WorkBench, float DeltaSeconds)
 		{
-			Scope(
-				WorkBench,
-				DeltaSeconds * ExactCraft::GetCraftingSpeedMultiplier(WorkBench));
+			Scope.Cancel();
+			if (!IsValid(WorkBench) || !WorkBench->mCurrentRecipe ||
+				WorkBench->mRecipeDuration <= UE_SMALL_NUMBER)
+			{
+				return;
+			}
+
+			const float Multiplier = ExactCraft::GetCraftingSpeedMultiplier(WorkBench);
+			float Progress = DeltaSeconds / WorkBench->mRecipeDuration;
+			Progress *= WorkBench->mCurrentFatigue;
+			Progress *= Multiplier;
+			WorkBench->mCurrentManufacturingProgress += Progress;
+
+			if (WorkBench->mCurrentManufacturingProgress < 1.0f)
+			{
+				return;
+			}
+
+			UFGInventoryComponent* Inventory = WorkBench->mInventory;
+			if (!IsValid(Inventory) && IsValid(WorkBench->mPlayerWorkingAtBench))
+			{
+				Inventory = WorkBench->mPlayerWorkingAtBench->GetInventory();
+			}
+			if (!IsValid(Inventory))
+			{
+				return;
+			}
+
+			while (WorkBench->mCurrentManufacturingProgress >= 1.0f &&
+				WorkBench->CanProduce(WorkBench->mCurrentRecipe, Inventory))
+			{
+				WorkBench->CraftComplete();
+				WorkBench->mCurrentManufacturingProgress -= 1.0f;
+			}
+
+			// Match vanilla/FMC behavior after a completion burst.
+			WorkBench->mCurrentFatigue =
+				powf(WorkBench->mFatigueMultiplier, WorkBench->mCounter);
+			WorkBench->mCurrentManufacturingProgress = 0.0f;
 		});
 
 	SUBSCRIBE_METHOD_AFTER(

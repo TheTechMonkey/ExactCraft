@@ -1,7 +1,7 @@
 #pragma once
 
 #include "Configuration/ModConfiguration.h"
-#include "Configuration/Properties/WidgetExtension/CP_Float.h"
+#include "Configuration/Properties/WidgetExtension/CP_Integer.h"
 #include "Subsystems/GameInstanceSubsystem.h"
 #include "ExactCraftConfiguration.generated.h"
 
@@ -29,7 +29,7 @@ struct EXACTCRAFT_API FExactCraftConfigurationStruct
 	GENERATED_BODY()
 
 	UPROPERTY(BlueprintReadWrite)
-	float CraftingSpeedMultiplier = 1.0f;
+	int32 CraftingSpeedMultiplier = 1;
 
 	static float GetCraftingSpeedMultiplier(const UObject* WorldContext);
 };
