@@ -12,7 +12,7 @@ Select a recipe, choose an exact number of crafting cycles with the slider or nu
 - Infinity mode for vanilla continuous crafting
 - MAX shortcut for the maximum currently affordable amount
 - Craft Bench and Equipment Workshop support
-- Configurable whole-number manual crafting speeds from 1x to 20x
+- Configurable manual crafting speeds from 1x to 20x
 - 28 localized tooltip languages
 - No save-game changes
 
