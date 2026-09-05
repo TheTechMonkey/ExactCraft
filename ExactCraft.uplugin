@@ -29,10 +29,6 @@
   ],
   "Plugins": [
     {
-      "Name": "Wwise",
-      "Enabled": true
-    },
-    {
       "Name": "SML",
       "Enabled": true,
       "SemVersion": "^3.12.0"
