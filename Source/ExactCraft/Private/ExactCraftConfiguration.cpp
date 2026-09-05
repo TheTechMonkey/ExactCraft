@@ -1,12 +1,15 @@
 #include "ExactCraftConfiguration.h"
 
 #include "Configuration/ConfigManager.h"
+#include "Configuration/Properties/ConfigPropertyBool.h"
 #include "Configuration/Properties/ConfigPropertyInteger.h"
 #include "Configuration/Properties/ConfigPropertySection.h"
 #include "Configuration/Properties/WidgetExtension/CP_Section.h"
 #include "Engine/Engine.h"
 #include "Engine/GameInstance.h"
+#include "TimerManager.h"
 #include "UObject/ConstructorHelpers.h"
+#include "Util/EngineUtil.h"
 
 #define LOCTEXT_NAMESPACE "ExactCraft"
 
@@ -14,7 +17,7 @@ UExactCraftConfiguration::UExactCraftConfiguration()
 {
 	ConfigId = {TEXT("ExactCraft"), TEXT("")};
 	DisplayName = LOCTEXT("ConfigName", "Exact Craft");
-	Description = LOCTEXT("ConfigDescription", "Controls optional manual-crafting speed.");
+	Description = LOCTEXT("ConfigDescription", "Controls Exact Craft speed and visual feedback.");
 
 	static ConstructorHelpers::FClassFinder<UConfigPropertySection> SectionPropertyClass(
 		TEXT("/SML/Interface/UI/Menu/Mods/ConfigProperties/BP_ConfigPropertySection"));
@@ -50,6 +53,24 @@ UExactCraftConfiguration::UExactCraftConfiguration()
 	Speed->MaxValue = 20;
 	Speed->bRequiresWorldReload = false;
 	RootSection->SectionProperties.Add(TEXT("CraftingSpeedMultiplier"), Speed);
+
+	static ConstructorHelpers::FClassFinder<UCP_Bool> BoolPropertyClass(
+		TEXT("/SML/Interface/UI/Menu/Mods/ConfigProperties/BP_ConfigPropertyBool"));
+	check(BoolPropertyClass.Succeeded());
+	UCP_Bool* CompletionPulse = CastChecked<UCP_Bool>(CreateDefaultSubobject(
+		TEXT("ShowCraftCompletionPulse"),
+		UCP_Bool::StaticClass(),
+		BoolPropertyClass.Class,
+		true,
+		false));
+	CompletionPulse->DisplayName = LOCTEXT("CompletionPulseName", "Show craft completion pulse");
+	CompletionPulse->Tooltip = LOCTEXT(
+		"CompletionPulseTooltip",
+		"Briefly enlarges and highlights the crafted item after each completed craft. Disable this to prevent rapid pulsing at high crafting speeds.");
+	CompletionPulse->DefaultValue = true;
+	CompletionPulse->Value = true;
+	CompletionPulse->bRequiresWorldReload = false;
+	RootSection->SectionProperties.Add(TEXT("ShowCraftCompletionPulse"), CompletionPulse);
 }
 
 void UExactCraftConfigurationRegistrar::Initialize(FSubsystemCollectionBase& Collection)
@@ -59,7 +80,69 @@ void UExactCraftConfigurationRegistrar::Initialize(FSubsystemCollectionBase& Col
 	if (UConfigManager* ConfigManager = GetGameInstance()->GetSubsystem<UConfigManager>())
 	{
 		ConfigManager->RegisterModConfiguration(UExactCraftConfiguration::StaticClass());
+		PollForConfigurationChanges();
+		FEngineUtil::DispatchWhenTimerManagerIsReady(
+			TDelegate<void(FTimerManager*)>::CreateUObject(
+				this, &UExactCraftConfigurationRegistrar::StartPersistenceTimer));
 	}
+}
+
+void UExactCraftConfigurationRegistrar::Deinitialize()
+{
+	PollForConfigurationChanges();
+	if (UWorld* World = GetWorld())
+	{
+		World->GetTimerManager().ClearTimer(PersistenceTimer);
+	}
+	Super::Deinitialize();
+}
+
+void UExactCraftConfigurationRegistrar::StartPersistenceTimer(FTimerManager* TimerManager)
+{
+	if (!TimerManager) return;
+	TimerManager->SetTimer(
+		PersistenceTimer,
+		FTimerDelegate::CreateUObject(
+			this, &UExactCraftConfigurationRegistrar::PollForConfigurationChanges),
+		0.5f,
+		true);
+}
+
+void UExactCraftConfigurationRegistrar::PollForConfigurationChanges()
+{
+	UConfigManager* ConfigManager = GetGameInstance()
+		? GetGameInstance()->GetSubsystem<UConfigManager>()
+		: nullptr;
+	if (!ConfigManager) return;
+
+	static const FConfigId ConfigId{TEXT("ExactCraft"), TEXT("")};
+	UConfigPropertySection* Root = ConfigManager->GetConfigurationRootSection(ConfigId);
+	if (!Root) return;
+	const TObjectPtr<UConfigProperty>* SpeedProperty =
+		Root->SectionProperties.Find(TEXT("CraftingSpeedMultiplier"));
+	const UConfigPropertyInteger* Speed = SpeedProperty
+		? Cast<UConfigPropertyInteger>(SpeedProperty->Get())
+		: nullptr;
+	const TObjectPtr<UConfigProperty>* PulseProperty =
+		Root->SectionProperties.Find(TEXT("ShowCraftCompletionPulse"));
+	const UConfigPropertyBool* CompletionPulse = PulseProperty
+		? Cast<UConfigPropertyBool>(PulseProperty->Get())
+		: nullptr;
+	if (!Speed || !CompletionPulse) return;
+
+	const int32 CurrentSpeed = FMath::Clamp(Speed->Value, 1, 20);
+	const int8 CurrentCompletionPulse = CompletionPulse->Value ? 1 : 0;
+	if (LastObservedSpeed == INDEX_NONE || LastObservedCompletionPulse < 0)
+	{
+		LastObservedSpeed = CurrentSpeed;
+		LastObservedCompletionPulse = CurrentCompletionPulse;
+		return;
+	}
+	if (CurrentSpeed == LastObservedSpeed && CurrentCompletionPulse == LastObservedCompletionPulse) return;
+
+	LastObservedSpeed = CurrentSpeed;
+	LastObservedCompletionPulse = CurrentCompletionPulse;
+	ConfigManager->MarkConfigurationDirty(ConfigId);
 }
 
 float FExactCraftConfigurationStruct::GetCraftingSpeedMultiplier(const UObject* WorldContext)
@@ -101,6 +184,38 @@ float FExactCraftConfigurationStruct::GetCraftingSpeedMultiplier(const UObject* 
 	}
 
 	return static_cast<float>(FMath::Clamp(Config.CraftingSpeedMultiplier, 1, 20));
+}
+
+bool FExactCraftConfigurationStruct::ShouldShowCraftCompletionPulse(const UObject* WorldContext)
+{
+	FExactCraftConfigurationStruct Config;
+	const UWorld* World = GEngine && WorldContext
+		? GEngine->GetWorldFromContextObject(WorldContext, EGetWorldErrorMode::ReturnNull)
+		: nullptr;
+	if (UGameInstance* GameInstance = World ? World->GetGameInstance() : nullptr)
+	{
+		if (UConfigManager* ConfigManager = GameInstance->GetSubsystem<UConfigManager>())
+		{
+			static const FConfigId ConfigId{TEXT("ExactCraft"), TEXT("")};
+			if (UConfigPropertySection* Root = ConfigManager->GetConfigurationRootSection(ConfigId))
+			{
+				if (const TObjectPtr<UConfigProperty>* Property =
+					Root->SectionProperties.Find(TEXT("ShowCraftCompletionPulse")))
+				{
+					if (const UConfigPropertyBool* CompletionPulse =
+						Cast<UConfigPropertyBool>(Property->Get()))
+					{
+						return CompletionPulse->Value;
+					}
+				}
+			}
+
+			ConfigManager->FillConfigurationStruct(
+				ConfigId,
+				FDynamicStructInfo{StaticStruct(), &Config});
+		}
+	}
+	return Config.ShowCraftCompletionPulse;
 }
 
 #undef LOCTEXT_NAMESPACE

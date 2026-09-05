@@ -15,10 +15,12 @@ public class ExactCraft : ModuleRules
             "CoreUObject",
             "Engine",
             "FactoryGame",
+            "InputCore",
             "SML",
             "Slate",
             "SlateCore",
             "UMG"
         });
+        PrivateDependencyModuleNames.Add("AkAudio");
     }
 }
