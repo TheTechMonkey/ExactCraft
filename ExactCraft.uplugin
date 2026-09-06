@@ -20,13 +20,6 @@
       "LoadingPhase": "Default"
     }
   ],
-  "LocalizationTargets": [
-    {
-      "Name": "ExactCraft",
-      "LoadingPolicy": "Always",
-      "ConfigGenerationPolicy": "Never"
-    }
-  ],
   "Plugins": [
     {
       "Name": "SML",

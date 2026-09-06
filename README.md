@@ -53,6 +53,10 @@ Use the slider or number field to select the amount you want.
 - Satisfactory 1.2.4, build 502094 or newer
 - Satisfactory Mod Loader 3.12 or newer
 
+## Building
+
+This is an Unreal Engine 5.6.1 Satisfactory mod. Place the plugin in the `Mods/ExactCraft` directory of a configured Satisfactory modding project, then build or package it with Alpakit.
+
 ## License
 
 MIT

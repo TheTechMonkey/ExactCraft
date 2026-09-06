@@ -32,20 +32,6 @@ namespace
 	const FLinearColor VanillaAffordOrange(0.791f, 0.315f, 0.074f, 1.0f);
 	const FLinearColor VanillaAffordText(0.042f, 0.034f, 0.028f, 1.0f);
 
-	uint32 GetInventoryHash(const UFGInventoryComponent* Inventory)
-	{
-		if (!IsValid(Inventory)) return 0;
-		uint32 Hash = GetTypeHash(Inventory->GetSizeLinear());
-		for (int32 Index = 0; Index < Inventory->GetSizeLinear(); ++Index)
-		{
-			FInventoryStack Stack;
-			Inventory->GetStackFromIndex(Index, Stack);
-			Hash = HashCombineFast(Hash, PointerHash(Stack.Item.GetItemClass().Get()));
-			Hash = HashCombineFast(Hash, GetTypeHash(Stack.NumItems));
-		}
-		return Hash;
-	}
-
 	UTextBlock* MakeLabel(UWidgetTree* Tree, const FText& Text, const int32 Size)
 	{
 		UTextBlock* Label = Tree->ConstructWidget<UTextBlock>();
@@ -343,6 +329,7 @@ void UExactCraftControlRow::SetCraftStep(
 	DisplayedCompletedCycles = CompletedCycles;
 	DisplayedTotalCycles = TotalCycles;
 	RefreshProductProgress();
+	RefreshQueueStatusBadge();
 }
 
 void UExactCraftControlRow::RefreshProductProgress()
@@ -528,26 +515,24 @@ void UExactCraftControlRow::RefreshRequestedOutputAffordability(const bool bForc
 		bRequestedOutputAffordable = false;
 		AffordabilityRequestedOutput = RequestedOutput;
 		AffordabilityRecipe = IsValid(WorkBench) ? WorkBench->GetCurrentRecipe() : nullptr;
-		AffordabilityInventoryHash = 0;
+		AffordabilityResourcesHash = 0;
 		MissingMaterialsLabel.Reset();
 		MissingMaterialsDetails.Reset();
 		RefreshQueueStatusBadge();
 		return;
 	}
 
-	UFGInventoryComponent* Inventory = WorkBench->GetInventory();
-	if (!IsValid(Inventory)) Inventory = WorkBench->GetPlayerInventory();
 	const TSubclassOf<UFGRecipe> Recipe = WorkBench->GetCurrentRecipe();
-	const uint32 InventoryHash = GetInventoryHash(Inventory);
+	const uint32 ResourcesHash = ExactCraft::GetCraftingResourcesHash(WorkBench);
 	if (!bForce && AffordabilityRequestedOutput == RequestedOutput &&
-		AffordabilityRecipe == Recipe && AffordabilityInventoryHash == InventoryHash)
+		AffordabilityRecipe == Recipe && AffordabilityResourcesHash == ResourcesHash)
 	{
 		return;
 	}
 
 	AffordabilityRequestedOutput = RequestedOutput;
 	AffordabilityRecipe = Recipe;
-	AffordabilityInventoryHash = InventoryHash;
+	AffordabilityResourcesHash = ResourcesHash;
 	TArray<ExactCraft::FMissingMaterial> MissingMaterials;
 	bRequestedOutputAffordable = ExactCraft::CanCompleteRequestedOutput(
 		WorkBench, RequestedOutput, &MissingMaterials);
@@ -590,7 +575,22 @@ void UExactCraftControlRow::RefreshQueueStatusBadge()
 	{
 		return;
 	}
-	if (bRequestActive || RequestedOutput <= 0 || HasVanillaIngredientsForOneCycle())
+	if (bRequestActive)
+	{
+		// Once the final recipe is directly craftable, let the vanilla affordance
+		// show normally. The queue badge is only needed while prerequisites make
+		// vanilla report that the selected recipe cannot yet be afforded.
+		if (DisplayedStepCount > 0 && DisplayedStepNumber == DisplayedStepCount)
+		{
+			QueueStatusContainer->SetVisibility(ESlateVisibility::Collapsed);
+			return;
+		}
+		QueueStatusContainer->SetVisibility(ESlateVisibility::HitTestInvisible);
+		QueueStatusLabel->SetText(LOCTEXT("QueueInProgress", "QUEUE IN PROGRESS"));
+		QueueStatusBadge->SetBrushColor(VanillaAffordOrange);
+		return;
+	}
+	if (RequestedOutput <= 0 || HasVanillaIngredientsForOneCycle())
 	{
 		QueueStatusContainer->SetVisibility(ESlateVisibility::Collapsed);
 		return;
@@ -612,15 +612,11 @@ void UExactCraftControlRow::RefreshQueueStatusBadge()
 bool UExactCraftControlRow::HasVanillaIngredientsForOneCycle() const
 {
 	if (!IsValid(WorkBench) || !WorkBench->GetCurrentRecipe()) return false;
-	UFGInventoryComponent* Inventory = WorkBench->GetInventory();
-	if (!IsValid(Inventory)) Inventory = WorkBench->GetPlayerInventory();
-	if (!IsValid(Inventory)) return false;
-
 	for (const FItemAmount& Ingredient : UFGRecipe::GetIngredients(
 		WorkBench, WorkBench->GetCurrentRecipe()))
 	{
 		if (Ingredient.ItemClass && Ingredient.Amount > 0 &&
-			Inventory->GetNumItems(Ingredient.ItemClass) < Ingredient.Amount)
+			ExactCraft::GetAvailableItemCount(WorkBench, Ingredient.ItemClass) < Ingredient.Amount)
 		{
 			return false;
 		}

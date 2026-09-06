@@ -21,6 +21,10 @@ namespace ExactCraft
 		UFGWorkBench* WorkBench,
 		int32 RequestedOutput,
 		TArray<FMissingMaterial>* OutMissingMaterials = nullptr);
+    int64 GetAvailableItemCount(
+		UFGWorkBench* WorkBench,
+		TSubclassOf<UFGItemDescriptor> Item);
+    uint32 GetCraftingResourcesHash(UFGWorkBench* WorkBench);
     int32 GetMaximumCraftableOutput(UFGWorkBench* WorkBench);
     bool AllowCraftCompletion(UFGWorkBench* WorkBench);
     void HandleCraftCompleted(UFGWorkBench* WorkBench);

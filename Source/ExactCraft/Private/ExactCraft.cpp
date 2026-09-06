@@ -16,6 +16,7 @@
 #include "ExactCraftControlRow.h"
 #include "ExactCraftHitCadence.h"
 #include "ExactCraftInternal.h"
+#include "FGCentralStorageSubsystem.h"
 #include "FGCharacterPlayer.h"
 #include "FGInventoryComponent.h"
 #include "FGRecipe.h"
@@ -71,6 +72,7 @@ namespace ExactCraft
 	{
 		UFGWorkBench* WorkBench = nullptr;
 		UFGInventoryComponent* Inventory = nullptr;
+		AFGCentralStorageSubsystem* CentralStorage = nullptr;
 		AFGRecipeManager* RecipeManager = nullptr;
 		TSet<TSubclassOf<UFGRecipe>> AllowedRecipes;
 	};
@@ -78,6 +80,26 @@ namespace ExactCraft
 	static TMap<TWeakObjectPtr<UFGWorkBench>, FCraftRequest> Requests;
 	static TMap<TWeakObjectPtr<UFGManufacturingButton>, TWeakObjectPtr<UFGWorkBench>> ButtonWorkBenches;
 	static TStrongObjectPtr<UAkAudioEvent> HammerHitEvent;
+
+	static UFGInventoryComponent* GetWorkbenchInventory(UFGWorkBench* WorkBench)
+	{
+		if (!IsValid(WorkBench)) return nullptr;
+		UFGInventoryComponent* Inventory = WorkBench->GetInventory();
+		return IsValid(Inventory) ? Inventory : WorkBench->GetPlayerInventory();
+	}
+
+	static int64 GetCombinedItemCount(
+		const UFGInventoryComponent* Inventory,
+		const AFGCentralStorageSubsystem* CentralStorage,
+		const TSubclassOf<UFGItemDescriptor> Item)
+	{
+		if (!Item) return 0;
+		const int64 InventoryCount = IsValid(Inventory) ? Inventory->GetNumItems(Item) : 0;
+		const int64 CentralCount = IsValid(CentralStorage)
+			? CentralStorage->GetNumItemsFromCentralStorage(Item)
+			: 0;
+		return InventoryCount + CentralCount;
+	}
 
 	static void PrepareHammerFeedback(UFGWorkBench* WorkBench, FCraftRequest& Request)
 	{
@@ -281,9 +303,8 @@ namespace ExactCraft
 		const TSubclassOf<UFGItemDescriptor> Item)
 	{
 		if (const int64* Existing = State.Counts.Find(Item)) return *Existing;
-		const int64 Actual = IsValid(Context.Inventory)
-			? Context.Inventory->GetNumItems(Item)
-			: 0;
+		const int64 Actual = GetCombinedItemCount(
+			Context.Inventory, Context.CentralStorage, Item);
 		State.Counts.Add(Item, Actual);
 		return Actual;
 	}
@@ -574,8 +595,7 @@ namespace ExactCraft
 			return false;
 		}
 
-		UFGInventoryComponent* Inventory = WorkBench->GetInventory();
-		if (!IsValid(Inventory)) Inventory = WorkBench->GetPlayerInventory();
+		UFGInventoryComponent* Inventory = GetWorkbenchInventory(WorkBench);
 		if (!IsValid(Inventory))
 		{
 			OutFailure = TEXT("player inventory is unavailable");
@@ -586,6 +606,7 @@ namespace ExactCraft
 		FPlanningContext Context;
 		Context.WorkBench = WorkBench;
 		Context.Inventory = Inventory;
+		Context.CentralStorage = AFGCentralStorageSubsystem::Get(WorkBench);
 		Context.RecipeManager = AFGRecipeManager::Get(WorkBench);
 		BuildAllowedRecipes(Context, RootRecipe);
 
@@ -759,6 +780,50 @@ namespace ExactCraft
 		TArray<FCraftStep> Steps;
 		FString Failure;
 		return BuildPlan(WorkBench, RequestedOutput, Steps, Failure, OutMissingMaterials);
+	}
+
+	int64 GetAvailableItemCount(
+		UFGWorkBench* WorkBench,
+		const TSubclassOf<UFGItemDescriptor> Item)
+	{
+		return GetCombinedItemCount(
+			GetWorkbenchInventory(WorkBench),
+			IsValid(WorkBench) ? AFGCentralStorageSubsystem::Get(WorkBench) : nullptr,
+			Item);
+	}
+
+	uint32 GetCraftingResourcesHash(UFGWorkBench* WorkBench)
+	{
+		uint32 Hash = 0;
+		if (const UFGInventoryComponent* Inventory = GetWorkbenchInventory(WorkBench))
+		{
+			Hash = GetTypeHash(Inventory->GetSizeLinear());
+			for (int32 Index = 0; Index < Inventory->GetSizeLinear(); ++Index)
+			{
+				FInventoryStack Stack;
+				Inventory->GetStackFromIndex(Index, Stack);
+				Hash = HashCombineFast(Hash, PointerHash(Stack.Item.GetItemClass().Get()));
+				Hash = HashCombineFast(Hash, GetTypeHash(Stack.NumItems));
+			}
+		}
+
+		if (const AFGCentralStorageSubsystem* CentralStorage =
+			IsValid(WorkBench) ? AFGCentralStorageSubsystem::Get(WorkBench) : nullptr)
+		{
+			TArray<FItemAmount> StoredItems;
+			CentralStorage->GetAllItemsFromCentralStorage(StoredItems);
+			StoredItems.Sort([](const FItemAmount& Left, const FItemAmount& Right)
+			{
+				return Left.ItemClass.Get() < Right.ItemClass.Get();
+			});
+			Hash = HashCombineFast(Hash, GetTypeHash(StoredItems.Num()));
+			for (const FItemAmount& Stored : StoredItems)
+			{
+				Hash = HashCombineFast(Hash, PointerHash(Stored.ItemClass.Get()));
+				Hash = HashCombineFast(Hash, GetTypeHash(Stored.Amount));
+			}
+		}
+		return Hash;
 	}
 
 	static void ResumeFeedback(UFGWorkBench* WorkBench, FCraftRequest& Request)
@@ -954,16 +1019,19 @@ namespace ExactCraft
 		if (!IsValid(WorkBench)) return 0;
 		const TSubclassOf<UFGRecipe> CurrentRecipe = WorkBench->GetCurrentRecipe();
 		if (!CurrentRecipe) return 0;
-		UFGInventoryComponent* Inventory = WorkBench->GetInventory();
-		if (!IsValid(Inventory)) Inventory = WorkBench->GetPlayerInventory();
+		UFGInventoryComponent* Inventory = GetWorkbenchInventory(WorkBench);
 		if (!IsValid(Inventory)) return 0;
+		const AFGCentralStorageSubsystem* CentralStorage =
+			AFGCentralStorageSubsystem::Get(WorkBench);
 
 		int32 Cycles = MAX_int32;
 		for (const FItemAmount& Ingredient : UFGRecipe::GetIngredients(WorkBench, CurrentRecipe))
 		{
 			if (Ingredient.ItemClass && Ingredient.Amount > 0)
 			{
-				Cycles = FMath::Min(Cycles, Inventory->GetNumItems(Ingredient.ItemClass) / Ingredient.Amount);
+				const int64 Available = GetCombinedItemCount(
+					Inventory, CentralStorage, Ingredient.ItemClass);
+				Cycles = FMath::Min<int64>(Cycles, Available / Ingredient.Amount);
 			}
 		}
 		if (Cycles == MAX_int32) Cycles = 0;

@@ -125,7 +125,7 @@ private:
 	int32 SliderMaximum = 100;
 	int32 RequestedOutput = 0;
 	int32 AffordabilityRequestedOutput = INDEX_NONE;
-	uint32 AffordabilityInventoryHash = 0;
+	uint32 AffordabilityResourcesHash = 0;
 	TSubclassOf<UFGRecipe> AffordabilityRecipe;
 	TSubclassOf<UFGRecipe> DisplayedStepRecipe;
 	int32 DisplayedStepNumber = 0;
