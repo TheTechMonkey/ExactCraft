@@ -66,11 +66,26 @@ UExactCraftConfiguration::UExactCraftConfiguration()
 	CompletionPulse->DisplayName = LOCTEXT("CompletionPulseName", "Show craft completion pulse");
 	CompletionPulse->Tooltip = LOCTEXT(
 		"CompletionPulseTooltip",
-		"Briefly enlarges and highlights the crafted item after each completed craft. Disable this to prevent rapid pulsing at high crafting speeds.");
+		"Briefly enlarges and highlights the crafted item after each completed Exact Craft craft. The vanilla screen always keeps its original pulse.");
 	CompletionPulse->DefaultValue = true;
 	CompletionPulse->Value = true;
 	CompletionPulse->bRequiresWorldReload = false;
 	RootSection->SectionProperties.Add(TEXT("ShowCraftCompletionPulse"), CompletionPulse);
+
+	UCP_Bool* ExactCraftScreen = CastChecked<UCP_Bool>(CreateDefaultSubobject(
+		TEXT("UseExactCraftScreen"),
+		UCP_Bool::StaticClass(),
+		BoolPropertyClass.Class,
+		true,
+		false));
+	ExactCraftScreen->DisplayName = LOCTEXT("ExactCraftScreenName", "Use Exact Craft screen");
+	ExactCraftScreen->Tooltip = LOCTEXT(
+		"ExactCraftScreenTooltip",
+		"Use Exact Craft status information in the recipe display. Disable for the untouched vanilla display. Reopen the workbench after changing this setting.");
+	ExactCraftScreen->DefaultValue = true;
+	ExactCraftScreen->Value = true;
+	ExactCraftScreen->bRequiresWorldReload = false;
+	RootSection->SectionProperties.Add(TEXT("UseExactCraftScreen"), ExactCraftScreen);
 }
 
 void UExactCraftConfigurationRegistrar::Initialize(FSubsystemCollectionBase& Collection)
@@ -128,20 +143,31 @@ void UExactCraftConfigurationRegistrar::PollForConfigurationChanges()
 	const UConfigPropertyBool* CompletionPulse = PulseProperty
 		? Cast<UConfigPropertyBool>(PulseProperty->Get())
 		: nullptr;
-	if (!Speed || !CompletionPulse) return;
+	const TObjectPtr<UConfigProperty>* ScreenProperty =
+		Root->SectionProperties.Find(TEXT("UseExactCraftScreen"));
+	const UConfigPropertyBool* ExactCraftScreen = ScreenProperty
+		? Cast<UConfigPropertyBool>(ScreenProperty->Get())
+		: nullptr;
+	if (!Speed || !CompletionPulse || !ExactCraftScreen) return;
 
 	const int32 CurrentSpeed = FMath::Clamp(Speed->Value, 1, 20);
 	const int8 CurrentCompletionPulse = CompletionPulse->Value ? 1 : 0;
-	if (LastObservedSpeed == INDEX_NONE || LastObservedCompletionPulse < 0)
+	const int8 CurrentExactCraftScreen = ExactCraftScreen->Value ? 1 : 0;
+	if (LastObservedSpeed == INDEX_NONE || LastObservedCompletionPulse < 0 ||
+		LastObservedExactCraftScreen < 0)
 	{
 		LastObservedSpeed = CurrentSpeed;
 		LastObservedCompletionPulse = CurrentCompletionPulse;
+		LastObservedExactCraftScreen = CurrentExactCraftScreen;
 		return;
 	}
-	if (CurrentSpeed == LastObservedSpeed && CurrentCompletionPulse == LastObservedCompletionPulse) return;
+	if (CurrentSpeed == LastObservedSpeed &&
+		CurrentCompletionPulse == LastObservedCompletionPulse &&
+		CurrentExactCraftScreen == LastObservedExactCraftScreen) return;
 
 	LastObservedSpeed = CurrentSpeed;
 	LastObservedCompletionPulse = CurrentCompletionPulse;
+	LastObservedExactCraftScreen = CurrentExactCraftScreen;
 	ConfigManager->MarkConfigurationDirty(ConfigId);
 }
 
@@ -216,6 +242,38 @@ bool FExactCraftConfigurationStruct::ShouldShowCraftCompletionPulse(const UObjec
 		}
 	}
 	return Config.ShowCraftCompletionPulse;
+}
+
+bool FExactCraftConfigurationStruct::ShouldUseExactCraftScreen(const UObject* WorldContext)
+{
+	FExactCraftConfigurationStruct Config;
+	const UWorld* World = GEngine && WorldContext
+		? GEngine->GetWorldFromContextObject(WorldContext, EGetWorldErrorMode::ReturnNull)
+		: nullptr;
+	if (UGameInstance* GameInstance = World ? World->GetGameInstance() : nullptr)
+	{
+		if (UConfigManager* ConfigManager = GameInstance->GetSubsystem<UConfigManager>())
+		{
+			static const FConfigId ConfigId{TEXT("ExactCraft"), TEXT("")};
+			if (UConfigPropertySection* Root = ConfigManager->GetConfigurationRootSection(ConfigId))
+			{
+				if (const TObjectPtr<UConfigProperty>* Property =
+					Root->SectionProperties.Find(TEXT("UseExactCraftScreen")))
+				{
+					if (const UConfigPropertyBool* ExactCraftScreen =
+						Cast<UConfigPropertyBool>(Property->Get()))
+					{
+						return ExactCraftScreen->Value;
+					}
+				}
+			}
+
+			ConfigManager->FillConfigurationStruct(
+				ConfigId,
+				FDynamicStructInfo{StaticStruct(), &Config});
+		}
+	}
+	return Config.UseExactCraftScreen;
 }
 
 #undef LOCTEXT_NAMESPACE

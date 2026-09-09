@@ -81,11 +81,33 @@ namespace ExactCraft
 	static TMap<TWeakObjectPtr<UFGManufacturingButton>, TWeakObjectPtr<UFGWorkBench>> ButtonWorkBenches;
 	static TStrongObjectPtr<UAkAudioEvent> HammerHitEvent;
 
+	static UWidget* FindNearestSharedParent(UWidget* First, UWidget* Second)
+	{
+		if (!IsValid(First) || !IsValid(Second)) return nullptr;
+		TSet<UWidget*> FirstParents;
+		UWidget* Current = First->GetParent();
+		for (int32 Depth = 0; IsValid(Current) && Depth < 4; ++Depth)
+		{
+			FirstParents.Add(Current);
+			Current = Current->GetParent();
+		}
+		Current = Second->GetParent();
+		for (int32 Depth = 0; IsValid(Current) && Depth < 4; ++Depth)
+		{
+			if (FirstParents.Contains(Current)) return Current;
+			Current = Current->GetParent();
+		}
+		return nullptr;
+	}
+
 	static UFGInventoryComponent* GetWorkbenchInventory(UFGWorkBench* WorkBench)
 	{
 		if (!IsValid(WorkBench)) return nullptr;
-		UFGInventoryComponent* Inventory = WorkBench->GetInventory();
-		return IsValid(Inventory) ? Inventory : WorkBench->GetPlayerInventory();
+		// A manual workbench can expose a valid internal inventory even though the
+		// ingredients shown in its UI live in the player's inventory. Prefer the
+		// active user's inventory so affordability and MAX match the visible counts.
+		UFGInventoryComponent* Inventory = WorkBench->GetPlayerInventory();
+		return IsValid(Inventory) ? Inventory : WorkBench->GetInventory();
 	}
 
 	static int64 GetCombinedItemCount(
@@ -705,17 +727,13 @@ namespace ExactCraft
 			UE_LOG(LogExactCraft, Error, TEXT("Manual-manufacturing root panel was not found"));
 			return;
 		}
-		if (UWidget* ScreenLabel = Tree->FindWidget(TEXT("ScreenLabel")))
-		{
-			ScreenLabel->SetVisibility(ESlateVisibility::Collapsed);
-		}
 		for (int32 Index = 0; Index < Target->GetChildrenCount(); ++Index)
 		{
 			if (Target->GetChildAt(Index)->IsA<UExactCraftControlRow>()) return;
 		}
 
 		UExactCraftControlRow* Row = Tree->ConstructWidget<UExactCraftControlRow>();
-		Row->InitializeFor(WorkBench, Button);
+		Row->InitializeFor(WorkBench, Button, Target);
 		Requests.FindOrAdd(WorkBench).ControlRow = Row;
 		Target->AddChild(Row);
 		if (UOverlaySlot* Slot = Cast<UOverlaySlot>(Row->Slot))
@@ -724,14 +742,51 @@ namespace ExactCraft
 			Slot->SetVerticalAlignment(VAlign_Bottom);
 			Slot->SetPadding(FMargin(14.0f, 0.0f, 14.0f, -28.0f));
 		}
-		Row->AttachQueueStatusBadge(Target);
-
-		UTextBlock* ProductLabel = Cast<UTextBlock>(Tree->FindWidget(TEXT("mAddedToInventoryText")));
-		UTextBlock* StepLabel = Cast<UTextBlock>(Tree->FindWidget(TEXT("mTotalInInventoryText")));
-		Row->SetProductLabels(ProductLabel, StepLabel);
-		if (!ProductLabel || !StepLabel)
+		if (FExactCraftConfigurationStruct::ShouldUseExactCraftScreen(WorkBench))
 		{
-			UE_LOG(LogExactCraft, Warning, TEXT("Vanilla product-progress labels were not found"));
+			// The native craft-amount control lives in Widget_SmallManufacturingScreen's
+			// private WidgetTree, not in this outer manual-manufacturing tree.
+			UUserWidget* SmallScreen = Cast<UUserWidget>(
+				Tree->FindWidget(TEXT("Widget_SmallManufacturingScreen")));
+			UWidgetTree* SmallScreenTree = IsValid(SmallScreen)
+				? SmallScreen->WidgetTree
+				: nullptr;
+			UWidget* CraftAmount = SmallScreenTree
+				? SmallScreenTree->FindWidget(TEXT("mCraftAmountContainer"))
+				: nullptr;
+			// The affordability pill and hammer/status area belong to the small
+			// manufacturing screen's private WidgetTree.
+			Row->AttachNativeManufacturingScreen(CraftAmount, SmallScreen);
+			if (UWidget* AddedToInventoryBox = Tree->FindWidget(TEXT("mAddedToInventoryBox")))
+			{
+				AddedToInventoryBox->RemoveFromParent();
+				AddedToInventoryBox->SetVisibility(ESlateVisibility::Collapsed);
+				UE_LOG(LogExactCraft, Display, TEXT("Removed native added-to-inventory overlay: %s"),
+					*AddedToInventoryBox->GetName());
+			}
+			else
+			{
+				UE_LOG(LogExactCraft, Warning, TEXT("Native mAddedToInventoryBox was not found"));
+			}
+			UWidget* AddedToInventoryText = Tree->FindWidget(TEXT("mAddedToInventoryText"));
+			UWidget* TotalInInventoryText = Tree->FindWidget(TEXT("mTotalInInventoryText"));
+			if (UWidget* CompletionCard = FindNearestSharedParent(
+				AddedToInventoryText, TotalInInventoryText))
+			{
+				CompletionCard->RemoveFromParent();
+				CompletionCard->SetVisibility(ESlateVisibility::Collapsed);
+				UE_LOG(LogExactCraft, Display, TEXT("Removed native completion card: %s"),
+					*CompletionCard->GetName());
+			}
+			else
+			{
+				UE_LOG(LogExactCraft, Warning, TEXT("Native completion card container was not found"));
+			}
+			if (!IsValid(CraftAmount))
+			{
+				UE_LOG(LogExactCraft, Warning, TEXT("Native manufacturing craft-amount control was not found"));
+			}
+
 		}
 	}
 
@@ -1043,7 +1098,8 @@ namespace ExactCraft
 	static void CaptureAnimationsBeforeCompletion(UFGWorkBench* WorkBench, FCraftRequest& Request)
 	{
 		Request.AnimationsBeforeCompletion.Reset();
-		if (FExactCraftConfigurationStruct::ShouldShowCraftCompletionPulse(WorkBench)) return;
+		if (!FExactCraftConfigurationStruct::ShouldUseExactCraftScreen(WorkBench) ||
+			FExactCraftConfigurationStruct::ShouldShowCraftCompletionPulse(WorkBench)) return;
 
 		for (UObject* Object = Request.Button.Get(); IsValid(Object); Object = Object->GetOuter())
 		{
@@ -1063,7 +1119,8 @@ namespace ExactCraft
 
 	static void SuppressNewCompletionAnimations(UFGWorkBench* WorkBench, FCraftRequest& Request)
 	{
-		if (FExactCraftConfigurationStruct::ShouldShowCraftCompletionPulse(WorkBench))
+		if (!FExactCraftConfigurationStruct::ShouldUseExactCraftScreen(WorkBench) ||
+			FExactCraftConfigurationStruct::ShouldShowCraftCompletionPulse(WorkBench))
 		{
 			Request.AnimationsBeforeCompletion.Reset();
 			return;

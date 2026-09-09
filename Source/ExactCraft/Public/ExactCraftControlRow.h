@@ -13,6 +13,8 @@ class UPanelWidget;
 class USizeBox;
 class USlider;
 class UTextBlock;
+class UWidget;
+class UUserWidget;
 
 UCLASS()
 class EXACTCRAFT_API UExactCraftQuantityBox final : public UEditableTextBox
@@ -38,12 +40,14 @@ class EXACTCRAFT_API UExactCraftControlRow final : public UBorder
 	GENERATED_BODY()
 
 public:
-	void InitializeFor(UFGWorkBench* InWorkBench, UFGManufacturingButton* InButton);
-	void AttachQueueStatusBadge(UPanelWidget* Target);
+	void InitializeFor(
+		UFGWorkBench* InWorkBench,
+		UFGManufacturingButton* InButton,
+		UPanelWidget* InScreenOverlay);
+	void AttachNativeManufacturingScreen(UWidget* NativeCraftAmount, UUserWidget* NativeScreen);
 	void HandleRecipeChanged(TSubclassOf<UFGRecipe> NewRecipe, bool bPreserveQuantity = false);
 	void HandleQuantitySpacePressed();
 	void SetRequestActive(bool bActive);
-	void SetProductLabels(UTextBlock* InProductLabel, UTextBlock* InStepLabel);
 	void SetCraftStep(
 		TSubclassOf<UFGRecipe> Recipe,
 		int32 StepNumber,
@@ -79,7 +83,9 @@ private:
 	void EnsureCraftInputEnabled();
 	void RefreshRequestedOutputAffordability(bool bForce = false);
 	void RefreshMaximumLabel();
-	void RefreshQueueStatusBadge();
+	void RefreshNativeCraftAmountVisibility();
+	void RefreshNativeIngredientPillPositions();
+	void ScheduleNativeIngredientPillPositions(int32 RemainingFrames = 2);
 	bool HasVanillaIngredientsForOneCycle() const;
 	void RefreshProductProgress();
 	void RefreshReadout();
@@ -96,6 +102,9 @@ private:
 	TObjectPtr<USlider> CycleSlider;
 
 	UPROPERTY()
+	TObjectPtr<UTextBlock> DefaultLabel;
+
+	UPROPERTY()
 	TObjectPtr<UExactCraftQuantityBox> CycleReadout;
 
 	UPROPERTY()
@@ -105,19 +114,31 @@ private:
 	TObjectPtr<UButton> MaximumButton;
 
 	UPROPERTY()
-	TObjectPtr<USizeBox> QueueStatusContainer;
+	TObjectPtr<UWidget> NativeCraftAmountContainer;
 
 	UPROPERTY()
-	TObjectPtr<UBorder> QueueStatusBadge;
+	TObjectPtr<UWidget> NativeWarningContainer;
+
+	UPROPERTY()
+	TObjectPtr<UUserWidget> NativeManufacturingScreen;
+
+	UPROPERTY()
+	TObjectPtr<UButton> MissingInfoButton;
+
+	UPROPERTY()
+	TObjectPtr<UTextBlock> MissingInfoLabel;
+
+	UPROPERTY()
+	TObjectPtr<USizeBox> MissingInfoContainer;
+
+	UPROPERTY()
+	TObjectPtr<USizeBox> MissingStatusContainer;
+
+	UPROPERTY()
+	TObjectPtr<UTextBlock> MissingStatusLabel;
 
 	UPROPERTY()
 	TObjectPtr<UTextBlock> QueueStatusLabel;
-
-	UPROPERTY()
-	TObjectPtr<UTextBlock> ProductLabel;
-
-	UPROPERTY()
-	TObjectPtr<UTextBlock> StepLabel;
 
 	FTimerHandle RefreshTimer;
 	TSubclassOf<UFGRecipe> LastRecipe;

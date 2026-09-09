@@ -31,6 +31,7 @@ private:
 	FTimerHandle PersistenceTimer;
 	int32 LastObservedSpeed = INDEX_NONE;
 	int8 LastObservedCompletionPulse = -1;
+	int8 LastObservedExactCraftScreen = -1;
 };
 
 USTRUCT(BlueprintType)
@@ -44,6 +45,10 @@ struct EXACTCRAFT_API FExactCraftConfigurationStruct
 	UPROPERTY(BlueprintReadWrite)
 	bool ShowCraftCompletionPulse = true;
 
+	UPROPERTY(BlueprintReadWrite)
+	bool UseExactCraftScreen = true;
+
 	static float GetCraftingSpeedMultiplier(const UObject* WorldContext);
 	static bool ShouldShowCraftCompletionPulse(const UObject* WorldContext);
+	static bool ShouldUseExactCraftScreen(const UObject* WorldContext);
 };

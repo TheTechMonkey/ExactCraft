@@ -1,17 +1,21 @@
 #include "ExactCraftControlRow.h"
 
 #include "Blueprint/WidgetTree.h"
+#include "Blueprint/UserWidget.h"
+#include "Components/Border.h"
 #include "Components/Button.h"
 #include "Components/ButtonSlot.h"
 #include "Components/EditableTextBox.h"
 #include "Components/HorizontalBox.h"
 #include "Components/HorizontalBoxSlot.h"
+#include "Components/Overlay.h"
 #include "Components/OverlaySlot.h"
 #include "Components/PanelWidget.h"
 #include "Components/SizeBox.h"
 #include "Components/Slider.h"
 #include "Components/TextBlock.h"
 #include "Engine/Texture2D.h"
+#include "ExactCraftConfiguration.h"
 #include "ExactCraftInternal.h"
 #include "FGInventoryComponent.h"
 #include "FGRecipe.h"
@@ -29,8 +33,6 @@ namespace
 	const FLinearColor PanelColor(0.025f, 0.028f, 0.030f, 0.98f);
 	const FLinearColor TrackColor(0.095f, 0.095f, 0.095f, 1.0f);
 	const FLinearColor FicsitOrange(0.95f, 0.40f, 0.055f, 1.0f);
-	const FLinearColor VanillaAffordOrange(0.791f, 0.315f, 0.074f, 1.0f);
-	const FLinearColor VanillaAffordText(0.042f, 0.034f, 0.028f, 1.0f);
 
 	UTextBlock* MakeLabel(UWidgetTree* Tree, const FText& Text, const int32 Size)
 	{
@@ -42,6 +44,24 @@ namespace
 		Font.Size = Size;
 		Label->SetFont(Font);
 		return Label;
+	}
+
+	void GatherNestedWidgets(UWidgetTree* Tree, TArray<UWidget*>& OutWidgets, TSet<UWidgetTree*>& VisitedTrees)
+	{
+		if (!IsValid(Tree) || VisitedTrees.Contains(Tree)) return;
+		VisitedTrees.Add(Tree);
+
+		TArray<UWidget*> Widgets;
+		Tree->GetAllWidgets(Widgets);
+		for (UWidget* Widget : Widgets)
+		{
+			if (!IsValid(Widget)) continue;
+			OutWidgets.Add(Widget);
+			if (UUserWidget* NestedWidget = Cast<UUserWidget>(Widget))
+			{
+				GatherNestedWidgets(NestedWidget->WidgetTree, OutWidgets, VisitedTrees);
+			}
+		}
 	}
 }
 
@@ -70,7 +90,8 @@ FReply UExactCraftQuantityBox::HandleKeyDown(
 
 void UExactCraftControlRow::InitializeFor(
 	UFGWorkBench* InWorkBench,
-	UFGManufacturingButton* InButton)
+	UFGManufacturingButton* InButton,
+	UPanelWidget* InScreenOverlay)
 {
 	WorkBench = InWorkBench;
 	ManufacturingButton = InButton;
@@ -94,7 +115,7 @@ void UExactCraftControlRow::InitializeFor(
 	UHorizontalBox* Layout = Tree->ConstructWidget<UHorizontalBox>();
 	AddChild(Layout);
 
-	UTextBlock* InfinityLabel = MakeLabel(Tree, FText::FromString(TEXT("\u221e")), 18);
+	DefaultLabel = MakeLabel(Tree, LOCTEXT("DefaultMode", "DEFAULT"), 9);
 	UButton* InfinityButton = Tree->ConstructWidget<UButton>();
 	FButtonStyle InvisibleButtonStyle;
 	InvisibleButtonStyle.Normal.DrawAs = ESlateBrushDrawType::NoDrawType;
@@ -104,9 +125,11 @@ void UExactCraftControlRow::InitializeFor(
 	InvisibleButtonStyle.NormalPadding = FMargin(0.0f);
 	InvisibleButtonStyle.PressedPadding = FMargin(0.0f);
 	InfinityButton->SetStyle(InvisibleButtonStyle);
-	InfinityButton->SetToolTipText(LOCTEXT("InfinityTooltip", "Craft continuously"));
+	InfinityButton->SetToolTipText(LOCTEXT(
+		"DefaultModeTooltip",
+		"Vanilla continuous crafting. No target amount or Exact Craft queue."));
 	InfinityButton->OnClicked.AddDynamic(this, &UExactCraftControlRow::HandleInfinityClicked);
-	if (UButtonSlot* ButtonSlot = Cast<UButtonSlot>(InfinityButton->AddChild(InfinityLabel)))
+	if (UButtonSlot* ButtonSlot = Cast<UButtonSlot>(InfinityButton->AddChild(DefaultLabel)))
 	{
 		ButtonSlot->SetHorizontalAlignment(HAlign_Center);
 		ButtonSlot->SetVerticalAlignment(VAlign_Center);
@@ -114,7 +137,7 @@ void UExactCraftControlRow::InitializeFor(
 	UHorizontalBoxSlot* InfinitySlot = Layout->AddChildToHorizontalBox(InfinityButton);
 	InfinitySlot->SetSize(FSlateChildSize(ESlateSizeRule::Automatic));
 	InfinitySlot->SetVerticalAlignment(VAlign_Center);
-	InfinitySlot->SetPadding(FMargin(2.0f, 0.0f, 8.0f, 0.0f));
+	InfinitySlot->SetPadding(FMargin(2.0f, 0.0f, 10.0f, 0.0f));
 
 	CycleSlider = Tree->ConstructWidget<USlider>();
 	CycleSlider->SetMinValue(0.0f);
@@ -158,7 +181,7 @@ void UExactCraftControlRow::InitializeFor(
 	CycleReadout = Tree->ConstructWidget<UExactCraftQuantityBox>();
 	CycleReadout->SetControlRow(this);
 	CycleReadout->SetText(FText::GetEmpty());
-	CycleReadout->SetHintText(FText::FromString(TEXT("\u221e")));
+	CycleReadout->SetHintText(LOCTEXT("AmountHint", "AMOUNT"));
 	CycleReadout->SetJustification(ETextJustify::Center);
 	CycleReadout->SetSelectAllTextWhenFocused(true);
 	// Let Enter perform a normal text-box commit and return focus to the
@@ -167,8 +190,12 @@ void UExactCraftControlRow::InitializeFor(
 	CycleReadout->SetClearKeyboardFocusOnCommit(true);
 	CycleReadout->SetIsReadOnly(false);
 	CycleReadout->SetForegroundColor(FLinearColor(1.0f, 0.60f, 0.10f, 1.0f));
+	CycleReadout->WidgetStyle.Padding = FMargin(4.0f, 0.0f);
 	FSlateFontInfo ReadoutFont = CycleReadout->WidgetStyle.TextStyle.Font;
-	ReadoutFont.Size = 16;
+	// The control opens in DEFAULT mode, where the field displays the longer
+	// AMOUNT hint. RefreshReadout switches this to the numeric size as soon as
+	// an exact quantity is selected.
+	ReadoutFont.Size = 8;
 	CycleReadout->WidgetStyle.TextStyle.SetFont(ReadoutFont);
 	CycleReadout->WidgetStyle.BackgroundImageNormal.DrawAs = ESlateBrushDrawType::RoundedBox;
 	CycleReadout->WidgetStyle.BackgroundImageNormal.TintColor =
@@ -201,6 +228,82 @@ void UExactCraftControlRow::InitializeFor(
 	UHorizontalBoxSlot* MaximumSlot = Layout->AddChildToHorizontalBox(MaximumButton);
 	MaximumSlot->SetSize(FSlateChildSize(ESlateSizeRule::Automatic));
 	MaximumSlot->SetVerticalAlignment(VAlign_Center);
+
+	// Everything placed inside the native recipe display belongs to the optional
+	// ExactCraft screen. Vanilla mode gets only the bottom quantity control row.
+	if (FExactCraftConfigurationStruct::ShouldUseExactCraftScreen(InWorkBench))
+	{
+	MissingInfoLabel = MakeLabel(Tree, LOCTEXT("MissingInfo", "i"), 9);
+	MissingInfoLabel->SetColorAndOpacity(FSlateColor(FLinearColor::White));
+	MissingInfoButton = Tree->ConstructWidget<UButton>();
+	FButtonStyle InfoButtonStyle;
+	auto ConfigureInfoBrush = [](FSlateBrush& Brush, const FLinearColor& Fill, const FLinearColor& Outline)
+	{
+		Brush.DrawAs = ESlateBrushDrawType::RoundedBox;
+		Brush.ImageSize = FVector2D(22.0f, 22.0f);
+		Brush.TintColor = FSlateColor(Fill);
+		Brush.OutlineSettings = FSlateBrushOutlineSettings(
+			11.0f, FSlateColor(Outline), 1.5f);
+	};
+	ConfigureInfoBrush(InfoButtonStyle.Normal,
+		FLinearColor(0.04f, 0.045f, 0.045f, 0.98f), FicsitOrange);
+	ConfigureInfoBrush(InfoButtonStyle.Hovered,
+		FLinearColor(0.95f, 0.40f, 0.055f, 1.0f), FLinearColor::White);
+	ConfigureInfoBrush(InfoButtonStyle.Pressed,
+		FLinearColor(0.75f, 0.28f, 0.03f, 1.0f), FLinearColor::White);
+	InfoButtonStyle.Disabled = InfoButtonStyle.Normal;
+	InfoButtonStyle.NormalPadding = FMargin(0.0f);
+	InfoButtonStyle.PressedPadding = FMargin(0.0f);
+	MissingInfoButton->SetStyle(InfoButtonStyle);
+	if (UButtonSlot* ButtonSlot = Cast<UButtonSlot>(MissingInfoButton->AddChild(MissingInfoLabel)))
+	{
+		ButtonSlot->SetHorizontalAlignment(HAlign_Center);
+		ButtonSlot->SetVerticalAlignment(VAlign_Center);
+	}
+	MissingInfoContainer = Tree->ConstructWidget<USizeBox>();
+	MissingInfoContainer->SetWidthOverride(22.0f);
+	MissingInfoContainer->SetHeightOverride(22.0f);
+	MissingInfoContainer->SetVisibility(ESlateVisibility::Collapsed);
+	MissingInfoContainer->AddChild(MissingInfoButton);
+	if (IsValid(InScreenOverlay))
+	{
+		MissingStatusContainer = Tree->ConstructWidget<USizeBox>();
+		MissingStatusContainer->SetWidthOverride(148.0f);
+		MissingStatusContainer->SetHeightOverride(24.0f);
+		MissingStatusContainer->SetVisibility(ESlateVisibility::Collapsed);
+
+		UBorder* MissingStatusBorder = Tree->ConstructWidget<UBorder>();
+		FSlateBrush MissingStatusBrush;
+		MissingStatusBrush.DrawAs = ESlateBrushDrawType::RoundedBox;
+		MissingStatusBrush.TintColor = FSlateColor(FLinearColor(0.95f, 0.55f, 0.20f, 1.0f));
+		MissingStatusBrush.OutlineSettings = FSlateBrushOutlineSettings(
+			4.0f, FSlateColor(FLinearColor(0.95f, 0.55f, 0.20f, 1.0f)), 0.0f);
+		MissingStatusBorder->SetBrush(MissingStatusBrush);
+		MissingStatusBorder->SetHorizontalAlignment(HAlign_Center);
+		MissingStatusBorder->SetVerticalAlignment(VAlign_Center);
+		MissingStatusLabel = MakeLabel(
+			Tree, LOCTEXT("RequestedAmountUnaffordable", "Can't afford Recipe"), 10);
+		MissingStatusLabel->SetColorAndOpacity(
+			FSlateColor(FLinearColor(0.12f, 0.14f, 0.14f, 1.0f)));
+		MissingStatusBorder->AddChild(MissingStatusLabel);
+		MissingStatusContainer->AddChild(MissingStatusBorder);
+		InScreenOverlay->AddChild(MissingStatusContainer);
+		if (UOverlaySlot* StatusSlot = Cast<UOverlaySlot>(MissingStatusContainer->Slot))
+		{
+			StatusSlot->SetHorizontalAlignment(HAlign_Center);
+			StatusSlot->SetVerticalAlignment(VAlign_Bottom);
+			StatusSlot->SetPadding(FMargin(0.0f, 0.0f, 0.0f, 41.0f));
+		}
+
+		InScreenOverlay->AddChild(MissingInfoContainer);
+		if (UOverlaySlot* InfoSlot = Cast<UOverlaySlot>(MissingInfoContainer->Slot))
+		{
+			InfoSlot->SetHorizontalAlignment(HAlign_Center);
+			InfoSlot->SetVerticalAlignment(VAlign_Bottom);
+			InfoSlot->SetPadding(FMargin(90.0f, 0.0f, 0.0f, 42.0f));
+		}
+	}
+	}
 	RefreshMaximum();
 	if (UWorld* World = GetWorld())
 	{
@@ -209,40 +312,46 @@ void UExactCraftControlRow::InitializeFor(
 	}
 }
 
-void UExactCraftControlRow::AttachQueueStatusBadge(UPanelWidget* Target)
+void UExactCraftControlRow::AttachNativeManufacturingScreen(
+	UWidget* NativeCraftAmount,
+	UUserWidget* NativeScreen)
 {
-	if (!IsValid(Target) || IsValid(QueueStatusContainer)) return;
-	UWidgetTree* Tree = GetTypedOuter<UWidgetTree>();
-	if (!Tree) return;
-
-	QueueStatusLabel = MakeLabel(Tree, LOCTEXT("QueueReady", "READY FOR QUEUE"), 9);
-	QueueStatusLabel->SetColorAndOpacity(FSlateColor(VanillaAffordText));
-	QueueStatusLabel->SetRenderTranslation(FVector2D(0.0f, 2.0f));
-
-	QueueStatusBadge = Tree->ConstructWidget<UBorder>();
-	FSlateBrush BadgeBrush;
-	BadgeBrush.DrawAs = ESlateBrushDrawType::RoundedBox;
-	// Keep the brush itself white so SetBrushColor supplies the color once.
-	// Tinting both made the orange too dark and saturated.
-	BadgeBrush.TintColor = FSlateColor(FLinearColor::White);
-	BadgeBrush.OutlineSettings = FSlateBrushOutlineSettings(4.0f);
-	QueueStatusBadge->SetBrush(BadgeBrush);
-	QueueStatusBadge->SetPadding(FMargin(6.0f, 1.0f));
-	QueueStatusBadge->AddChild(QueueStatusLabel);
-
-	QueueStatusContainer = Tree->ConstructWidget<USizeBox>();
-	QueueStatusContainer->SetWidthOverride(142.0f);
-	QueueStatusContainer->SetHeightOverride(22.0f);
-	QueueStatusContainer->SetRenderTranslation(FVector2D(0.5f, -1.0f));
-	QueueStatusContainer->AddChild(QueueStatusBadge);
-	Target->AddChild(QueueStatusContainer);
-	if (UOverlaySlot* StatusSlot = Cast<UOverlaySlot>(QueueStatusContainer->Slot))
+	if (!IsValid(NativeScreen)) return;
+	NativeManufacturingScreen = NativeScreen;
+	if (IsValid(NativeCraftAmount))
 	{
-		StatusSlot->SetHorizontalAlignment(HAlign_Center);
-		StatusSlot->SetVerticalAlignment(VAlign_Bottom);
-		StatusSlot->SetPadding(FMargin(0.0f, 0.0f, 0.0f, 28.0f));
+		NativeCraftAmountContainer = NativeCraftAmount;
 	}
-	RefreshQueueStatusBadge();
+	if (IsValid(NativeScreen->WidgetTree))
+	{
+		NativeWarningContainer = NativeScreen->WidgetTree->FindWidget(TEXT("mWarning"));
+		if (IsValid(NativeWarningContainer))
+		{
+			NativeWarningContainer->RemoveFromParent();
+			NativeWarningContainer->SetVisibility(ESlateVisibility::Collapsed);
+		}
+		else
+		{
+			UE_LOG(LogExactCraft, Warning, TEXT("Native mWarning pill was not found"));
+		}
+
+		if (UOverlay* ProgressOverlay = Cast<UOverlay>(
+			NativeScreen->WidgetTree->FindWidget(TEXT("mProgress"))))
+		{
+			QueueStatusLabel = MakeLabel(NativeScreen->WidgetTree, FText::GetEmpty(), 10);
+			QueueStatusLabel->SetVisibility(ESlateVisibility::Collapsed);
+			UOverlaySlot* QueueStatusSlot = ProgressOverlay->AddChildToOverlay(QueueStatusLabel);
+			QueueStatusSlot->SetHorizontalAlignment(HAlign_Center);
+			QueueStatusSlot->SetVerticalAlignment(VAlign_Center);
+			QueueStatusSlot->SetPadding(FMargin(8.0f, 0.0f));
+		}
+		else
+		{
+			UE_LOG(LogExactCraft, Warning, TEXT("Native mProgress overlay was not found"));
+		}
+	}
+	ScheduleNativeIngredientPillPositions();
+	RefreshNativeCraftAmountVisibility();
 }
 
 void UExactCraftControlRow::BeginDestroy()
@@ -272,6 +381,7 @@ void UExactCraftControlRow::HandleRecipeChanged(
 		return;
 	}
 	RefreshMaximum();
+	ScheduleNativeIngredientPillPositions();
 }
 
 void UExactCraftControlRow::HandleQuantitySpacePressed()
@@ -291,13 +401,18 @@ void UExactCraftControlRow::HandleQuantitySpacePressed()
 void UExactCraftControlRow::SetRequestActive(const bool bActive)
 {
 	bRequestActive = bActive;
-	RefreshQueueStatusBadge();
+	RefreshNativeCraftAmountVisibility();
 	if (bRequestActive)
 	{
 		EnsureCraftInputEnabled();
 	}
 	if (!bRequestActive)
 	{
+		if (IsValid(QueueStatusLabel))
+		{
+			QueueStatusLabel->SetVisibility(ESlateVisibility::Collapsed);
+			QueueStatusLabel->SetText(FText::GetEmpty());
+		}
 		DisplayedStepRecipe = nullptr;
 		DisplayedStepNumber = 0;
 		DisplayedStepCount = 0;
@@ -306,14 +421,6 @@ void UExactCraftControlRow::SetRequestActive(const bool bActive)
 		MaximumOutput = -1;
 		RefreshMaximum();
 	}
-}
-
-void UExactCraftControlRow::SetProductLabels(
-	UTextBlock* InProductLabel,
-	UTextBlock* InStepLabel)
-{
-	ProductLabel = InProductLabel;
-	StepLabel = InStepLabel;
 }
 
 void UExactCraftControlRow::SetCraftStep(
@@ -329,13 +436,12 @@ void UExactCraftControlRow::SetCraftStep(
 	DisplayedCompletedCycles = CompletedCycles;
 	DisplayedTotalCycles = TotalCycles;
 	RefreshProductProgress();
-	RefreshQueueStatusBadge();
+	RefreshNativeCraftAmountVisibility();
 }
 
 void UExactCraftControlRow::RefreshProductProgress()
 {
-	if (!bRequestActive || !DisplayedStepRecipe ||
-		!IsValid(ProductLabel) || !IsValid(StepLabel))
+	if (!bRequestActive || !DisplayedStepRecipe || !IsValid(QueueStatusLabel))
 	{
 		return;
 	}
@@ -348,23 +454,33 @@ void UExactCraftControlRow::RefreshProductProgress()
 	const int64 CompletedItems = static_cast<int64>(DisplayedCompletedCycles) * OutputPerCycle;
 	const int64 TotalItems = static_cast<int64>(DisplayedTotalCycles) * OutputPerCycle;
 
-	ProductLabel->SetText(FText::Format(
-		LOCTEXT("CraftProductProgressFormat", "{0}\n{1} / {2}"),
-		ItemName,
-		FText::AsNumber(CompletedItems),
-		FText::AsNumber(TotalItems)));
-	StepLabel->SetText(FText::Format(
-		LOCTEXT("CraftStepFormat", "STEP {0} OF {1}"),
-		FText::AsNumber(DisplayedStepNumber),
-		FText::AsNumber(DisplayedStepCount)));
-	ProductLabel->SetVisibility(ESlateVisibility::HitTestInvisible);
-	StepLabel->SetVisibility(ESlateVisibility::HitTestInvisible);
+	if (DisplayedStepNumber >= DisplayedStepCount)
+	{
+		QueueStatusLabel->SetText(FText::Format(
+			LOCTEXT("FinalCraftProgressFormat", "CRAFTING {0}  |  {1} / {2}  |  FINAL STEP"),
+			ItemName,
+			FText::AsNumber(CompletedItems),
+			FText::AsNumber(TotalItems)));
+	}
+	else
+	{
+		QueueStatusLabel->SetText(FText::Format(
+			LOCTEXT("QueueCraftProgressFormat", "CRAFTING {0}  |  {1} / {2}  |  STEP {3} OF {4}"),
+			ItemName,
+			FText::AsNumber(CompletedItems),
+			FText::AsNumber(TotalItems),
+			FText::AsNumber(DisplayedStepNumber),
+			FText::AsNumber(DisplayedStepCount)));
+	}
+	QueueStatusLabel->SetVisibility(ESlateVisibility::HitTestInvisible);
 }
 
 void UExactCraftControlRow::HandleSliderChanged(const float Value)
 {
 	if (bUpdatingControls) return;
-	ApplyRequestedOutput(FMath::RoundToInt(Value));
+	// DEFAULT is a separate mode, not a numeric point on the amount slider.
+	// Any deliberate slider interaction selects at least one recipe batch.
+	ApplyRequestedOutput(FMath::Max(GetOutputPerCycle(), FMath::RoundToInt(Value)));
 }
 
 void UExactCraftControlRow::HandleInfinityClicked()
@@ -431,8 +547,13 @@ void UExactCraftControlRow::HandleValueChanged(const FText& Text)
 
 void UExactCraftControlRow::RefreshMaximum()
 {
+	// The vanilla Blueprint may restore the hammer row after recipe updates.
+	if (IsValid(NativeCraftAmountContainer))
+	{
+		NativeCraftAmountContainer->SetVisibility(ESlateVisibility::Collapsed);
+	}
 	RefreshRequestedOutputAffordability();
-	RefreshQueueStatusBadge();
+	RefreshNativeCraftAmountVisibility();
 	EnsureCraftInputEnabled();
 	if (bRequestActive)
 	{
@@ -518,7 +639,7 @@ void UExactCraftControlRow::RefreshRequestedOutputAffordability(const bool bForc
 		AffordabilityResourcesHash = 0;
 		MissingMaterialsLabel.Reset();
 		MissingMaterialsDetails.Reset();
-		RefreshQueueStatusBadge();
+		RefreshNativeCraftAmountVisibility();
 		return;
 	}
 
@@ -565,47 +686,95 @@ void UExactCraftControlRow::RefreshRequestedOutputAffordability(const bool bForc
 			*FString::Join(Lines, TEXT("\n")));
 	}
 	RefreshMaximumLabel();
-	RefreshQueueStatusBadge();
+	RefreshNativeCraftAmountVisibility();
 }
 
-void UExactCraftControlRow::RefreshQueueStatusBadge()
+void UExactCraftControlRow::RefreshNativeCraftAmountVisibility()
 {
-	if (!IsValid(QueueStatusContainer) || !IsValid(QueueStatusBadge) ||
-		!IsValid(QueueStatusLabel))
+	RefreshNativeIngredientPillPositions();
+	if (IsValid(NativeCraftAmountContainer))
 	{
-		return;
+		NativeCraftAmountContainer->SetVisibility(ESlateVisibility::Collapsed);
 	}
-	if (bRequestActive)
+	if (IsValid(NativeWarningContainer))
 	{
-		// Once the final recipe is directly craftable, let the vanilla affordance
-		// show normally. The queue badge is only needed while prerequisites make
-		// vanilla report that the selected recipe cannot yet be afforded.
-		if (DisplayedStepCount > 0 && DisplayedStepNumber == DisplayedStepCount)
-		{
-			QueueStatusContainer->SetVisibility(ESlateVisibility::Collapsed);
-			return;
-		}
-		QueueStatusContainer->SetVisibility(ESlateVisibility::HitTestInvisible);
-		QueueStatusLabel->SetText(LOCTEXT("QueueInProgress", "QUEUE IN PROGRESS"));
-		QueueStatusBadge->SetBrushColor(VanillaAffordOrange);
-		return;
-	}
-	if (RequestedOutput <= 0 || HasVanillaIngredientsForOneCycle())
-	{
-		QueueStatusContainer->SetVisibility(ESlateVisibility::Collapsed);
-		return;
+		NativeWarningContainer->SetVisibility(ESlateVisibility::Collapsed);
 	}
 
-	QueueStatusContainer->SetVisibility(ESlateVisibility::HitTestInvisible);
-	if (bRequestedOutputAffordable)
+	if (!IsValid(MissingInfoButton) || !IsValid(MissingInfoContainer)) return;
+	const bool bHasRecipe = IsValid(WorkBench) && WorkBench->GetCurrentRecipe() != nullptr;
+	const bool bDefaultMissing = RequestedOutput <= 0 && !bRequestActive && bHasRecipe &&
+		!HasVanillaIngredientsForOneCycle();
+	const bool bExactMissing = RequestedOutput > 0 && !bRequestActive &&
+		!bRequestedOutputAffordable && !MissingMaterialsDetails.IsEmpty();
+	const bool bShowStatus = bDefaultMissing || bExactMissing;
+	if (IsValid(MissingStatusContainer))
 	{
-		QueueStatusLabel->SetText(LOCTEXT("QueueReady", "READY FOR QUEUE"));
-		QueueStatusBadge->SetBrushColor(VanillaAffordOrange);
+		MissingStatusContainer->SetVisibility(
+			bShowStatus ? ESlateVisibility::HitTestInvisible : ESlateVisibility::Collapsed);
 	}
-	else
+	if (IsValid(MissingStatusLabel))
 	{
-		QueueStatusLabel->SetText(LOCTEXT("QueueMissing", "MISSING INGREDIENTS"));
-		QueueStatusBadge->SetBrushColor(VanillaAffordOrange);
+		MissingStatusLabel->SetText(bDefaultMissing
+			? LOCTEXT("DefaultCannotAfford", "Can't afford Recipe")
+			: LOCTEXT("ExactMissingIngredients", "Missing Ingredients"));
+	}
+	MissingInfoContainer->SetVisibility(
+		bExactMissing ? ESlateVisibility::Visible : ESlateVisibility::Collapsed);
+	MissingInfoButton->SetToolTipText(
+		bExactMissing ? FText::FromString(MissingMaterialsDetails) : FText::GetEmpty());
+}
+
+void UExactCraftControlRow::RefreshNativeIngredientPillPositions()
+{
+	if (!IsValid(NativeManufacturingScreen) || !IsValid(NativeManufacturingScreen->WidgetTree)) return;
+	TArray<UWidget*> Widgets;
+	TSet<UWidgetTree*> VisitedTrees;
+	GatherNestedWidgets(NativeManufacturingScreen->WidgetTree, Widgets, VisitedTrees);
+	for (UWidget* Widget : Widgets)
+	{
+		UTextBlock* AmountText = Cast<UTextBlock>(Widget);
+		if (!IsValid(AmountText) || AmountText->GetFName() != TEXT("mStackSizeLbl")) continue;
+		UUserWidget* OwnerWidget = AmountText->GetTypedOuter<UUserWidget>();
+		if (!IsValid(OwnerWidget) || !OwnerWidget->GetClass()->GetName().StartsWith(TEXT("Widget_CostSlotWrapper")))
+		{
+			continue;
+		}
+
+		UWidget* PillOverlay = AmountText->GetParent();
+		for (int32 Depth = 0; IsValid(PillOverlay) && Depth < 4; ++Depth)
+		{
+			if (PillOverlay->GetFName() == TEXT("StackSizeOverlay")) break;
+			PillOverlay = PillOverlay->GetParent();
+		}
+		if (IsValid(PillOverlay) && PillOverlay->GetFName() == TEXT("StackSizeOverlay"))
+		{
+			const FVector2D TileSize = OwnerWidget->GetCachedGeometry().GetLocalSize();
+			if (TileSize.X > 0.0f && TileSize.Y > 0.0f)
+			{
+				const bool bLargeOutputTile = FMath::Max(TileSize.X, TileSize.Y) > 80.0f;
+				PillOverlay->SetRenderTranslation(
+					bLargeOutputTile ? FVector2D::ZeroVector : FVector2D(0.0f, 22.0f));
+			}
+		}
+	}
+}
+
+void UExactCraftControlRow::ScheduleNativeIngredientPillPositions(const int32 RemainingFrames)
+{
+	RefreshNativeIngredientPillPositions();
+	if (RemainingFrames <= 0) return;
+	if (UWorld* World = GetWorld())
+	{
+		const TWeakObjectPtr<UExactCraftControlRow> WeakThis(this);
+		World->GetTimerManager().SetTimerForNextTick(FTimerDelegate::CreateLambda(
+			[WeakThis, RemainingFrames]
+			{
+				if (UExactCraftControlRow* ControlRow = WeakThis.Get())
+				{
+					ControlRow->ScheduleNativeIngredientPillPositions(RemainingFrames - 1);
+				}
+			}));
 	}
 }
 
@@ -627,17 +796,11 @@ bool UExactCraftControlRow::HasVanillaIngredientsForOneCycle() const
 void UExactCraftControlRow::RefreshMaximumLabel()
 {
 	if (!IsValid(MaximumLabel) || !IsValid(MaximumButton)) return;
-	if (!bRequestedOutputAffordable && !MissingMaterialsLabel.IsEmpty())
-	{
-		MaximumLabel->SetText(FText::FromString(MissingMaterialsLabel));
-		MaximumLabel->SetColorAndOpacity(FSlateColor(FLinearColor(1.0f, 0.37f, 0.12f, 1.0f)));
-		MaximumButton->SetToolTipText(FText::FromString(MissingMaterialsDetails));
-		return;
-	}
-
 	MaximumLabel->SetText(FText::Format(LOCTEXT("MaximumFormat", "MAX {0}"), MaximumOutput));
 	MaximumLabel->SetColorAndOpacity(FSlateColor(FLinearColor(0.78f, 0.80f, 0.80f, 1.0f)));
-	MaximumButton->SetToolTipText(LOCTEXT("MaximumTooltip", "Craft the maximum currently affordable amount"));
+	MaximumButton->SetToolTipText(LOCTEXT(
+		"MaximumTooltip",
+		"Set the largest exact amount currently craftable."));
 }
 
 void UExactCraftControlRow::EnsureCraftInputEnabled()
@@ -671,7 +834,18 @@ void UExactCraftControlRow::RefreshReadout()
 {
 	const bool bWasUpdating = bUpdatingControls;
 	bUpdatingControls = true;
+	FSlateFontInfo ReadoutFont = CycleReadout->WidgetStyle.TextStyle.Font;
+	ReadoutFont.Size = RequestedOutput <= 0 ? 8 : 16;
+	CycleReadout->WidgetStyle.TextStyle.SetFont(ReadoutFont);
+	CycleReadout->SynchronizeProperties();
 	CycleReadout->SetText(RequestedOutput <= 0 ? FText::GetEmpty() : FText::AsNumber(RequestedOutput));
+	if (IsValid(DefaultLabel))
+	{
+		DefaultLabel->SetColorAndOpacity(FSlateColor(
+			RequestedOutput <= 0
+				? FLinearColor(1.0f, 0.60f, 0.10f, 1.0f)
+				: FLinearColor(0.78f, 0.80f, 0.80f, 1.0f)));
+	}
 	bUpdatingControls = bWasUpdating;
 }
 
