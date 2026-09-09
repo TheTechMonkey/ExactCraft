@@ -34,6 +34,10 @@ Prefer the original interface? Disable the Exact Craft UI and the vanilla displa
 
 **No overcrafting. Just make what you need.**
 
+## To-Do
+- Create shopping list from missing ingredients.
+- Continue crafting queue once missing ingredients are gathered.
+
 ## Requirements
 
 - Satisfactory 1.2.4, build 502094 or newer
