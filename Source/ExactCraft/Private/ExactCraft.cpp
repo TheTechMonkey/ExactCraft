@@ -10,7 +10,6 @@
 #include "Components/OverlaySlot.h"
 #include "Components/PanelWidget.h"
 #include "Components/TextBlock.h"
-#include "Engine/Engine.h"
 #include "Engine/World.h"
 #include "ExactCraftConfiguration.h"
 #include "ExactCraftControlRow.h"
@@ -208,11 +207,6 @@ namespace ExactCraft
 	static void ShowMessage(const FString& Message)
 	{
 		UE_LOG(LogExactCraft, Warning, TEXT("%s"), *Message);
-		if (GEngine)
-		{
-			GEngine->AddOnScreenDebugMessage(
-				-1, 6.0f, FColor(255, 145, 30), FString::Printf(TEXT("Exact Craft: %s"), *Message));
-		}
 	}
 
 	static void InvokeButtonFunction(UFGManufacturingButton* Button, const FName FunctionName)
