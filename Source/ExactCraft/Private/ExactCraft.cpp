@@ -1031,8 +1031,14 @@ namespace ExactCraft
 
 			FCraftRequest& Request = Iterator.Value();
 			UExactCraftControlRow* Row = Request.ControlRow.Get();
+			// The workbench user is replicated, so in MP a remote player opening
+			// a bench this machine still has a request registered for would
+			// otherwise arm that request here. Space would then be consumed from
+			// the local player -- costing them their jump -- and craft into the
+			// remote player's inventory. Only the machine driving it should claim Space.
+			const AFGCharacterPlayer* User = WorkBench->GetWorkBenchUser();
 			if (!IsValid(Row) || Row->GetRequestedOutput() <= 0 ||
-				!IsValid(WorkBench->GetWorkBenchUser()))
+				!IsValid(User) || !User->IsLocallyControlled())
 			{
 				continue;
 			}
