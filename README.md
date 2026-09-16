@@ -10,7 +10,8 @@ Need Motors but don't have enough Rotors or Stators? Exact Craft checks the mate
 
 - Craft an exact quantity
 - Automatically queue and craft required intermediate parts
-- missing-ingredient information
+- Missing-ingredient information
+- Checks that the completed queue will fit in your inventory
 - Support for the Craft Bench and Equipment Workshop
 - No save modifications
 - Optional Exact Craft interface
@@ -18,6 +19,8 @@ Need Motors but don't have enough Rotors or Stators? Exact Craft checks the mate
 - Optional Adjustable manual crafting speed from **1x to 20x** in the mod settings
 
 Exact Craft only uses recipes available at the current crafting station and materials already available in your inventory. If you lack the necessary raw materials, it tells you what is missing.
+
+Before starting, Exact Craft also checks the complete queue against your available inventory space. It respects current stack sizes, including stack sizes changed by other mods.
 
 Recipes that produce multiple items still use complete recipe batches. For example, because one Screw craft produces four Screws, Exact Craft adjusts the selected amount to a valid multiple of four.
 

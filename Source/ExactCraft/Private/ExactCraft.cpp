@@ -18,6 +18,7 @@
 #include "FGCentralStorageSubsystem.h"
 #include "FGCharacterPlayer.h"
 #include "FGInventoryComponent.h"
+#include "FGPlayerState.h"
 #include "FGRecipe.h"
 #include "FGRecipeManager.h"
 #include "FGWorkBench.h"
@@ -76,6 +77,20 @@ namespace ExactCraft
 		TSet<TSubclassOf<UFGRecipe>> AllowedRecipes;
 	};
 
+	struct FVirtualInventorySlot
+	{
+		FInventoryItem Item;
+		int64 Count = 0;
+	};
+
+	struct FInventoryCapacityState
+	{
+		UFGInventoryComponent* Inventory = nullptr;
+		TArray<FVirtualInventorySlot> Slots;
+		TMap<TSubclassOf<UFGItemDescriptor>, int64> CentralCounts;
+		bool bTakeFromInventoryFirst = true;
+	};
+
 	static TMap<TWeakObjectPtr<UFGWorkBench>, FCraftRequest> Requests;
 	static TMap<TWeakObjectPtr<UFGManufacturingButton>, TWeakObjectPtr<UFGWorkBench>> ButtonWorkBenches;
 	static TStrongObjectPtr<UAkAudioEvent> HammerHitEvent;
@@ -107,6 +122,13 @@ namespace ExactCraft
 		// active user's inventory so affordability and MAX match the visible counts.
 		UFGInventoryComponent* Inventory = WorkBench->GetPlayerInventory();
 		return IsValid(Inventory) ? Inventory : WorkBench->GetInventory();
+	}
+
+	static bool IsWorkbenchUsedByLocalPlayer(UFGWorkBench* WorkBench)
+	{
+		if (!IsValid(WorkBench)) return false;
+		const AFGCharacterPlayer* Player = WorkBench->GetWorkBenchUser();
+		return IsValid(Player) && Player->IsLocallyControlled();
 	}
 
 	static int64 GetCombinedItemCount(
@@ -427,6 +449,182 @@ namespace ExactCraft
 		}
 	}
 
+	static bool InitializeCapacityState(
+		UFGWorkBench* WorkBench,
+		FInventoryCapacityState& State)
+	{
+		State.Inventory = GetWorkbenchInventory(WorkBench);
+		if (!IsValid(State.Inventory)) return false;
+
+		State.Slots.SetNum(State.Inventory->GetSizeLinear());
+		for (int32 Index = 0; Index < State.Slots.Num(); ++Index)
+		{
+			FInventoryStack Stack;
+			if (State.Inventory->GetStackFromIndex(Index, Stack) && Stack.HasItems())
+			{
+				State.Slots[Index].Item = Stack.Item;
+				State.Slots[Index].Count = Stack.NumItems;
+			}
+		}
+
+		if (AFGCentralStorageSubsystem* CentralStorage = AFGCentralStorageSubsystem::Get(WorkBench))
+		{
+			TArray<FItemAmount> StoredItems;
+			CentralStorage->GetAllItemsFromCentralStorage(StoredItems);
+			for (const FItemAmount& Stored : StoredItems)
+			{
+				if (Stored.ItemClass && Stored.Amount > 0)
+				{
+					State.CentralCounts.FindOrAdd(Stored.ItemClass) += Stored.Amount;
+				}
+			}
+		}
+
+		if (const AFGCharacterPlayer* Player = WorkBench->GetWorkBenchUser())
+		{
+			if (const AFGPlayerState* PlayerState = Player->GetControllingPlayerState())
+			{
+				State.bTakeFromInventoryFirst =
+					PlayerState->GetTakeFromInventoryBeforeCentralStorage();
+			}
+		}
+		return true;
+	}
+
+	static int64 RemoveFromVirtualInventory(
+		FInventoryCapacityState& State,
+		const TSubclassOf<UFGItemDescriptor> Item,
+		int64 Amount)
+	{
+		for (FVirtualInventorySlot& Slot : State.Slots)
+		{
+			if (Amount <= 0) break;
+			if (Slot.Count <= 0 || Slot.Item.GetItemClass() != Item) continue;
+
+			const int64 Removed = FMath::Min(Amount, Slot.Count);
+			Slot.Count -= Removed;
+			Amount -= Removed;
+			if (Slot.Count == 0) Slot.Item = FInventoryItem();
+		}
+		return Amount;
+	}
+
+	static int64 RemoveFromVirtualCentralStorage(
+		FInventoryCapacityState& State,
+		const TSubclassOf<UFGItemDescriptor> Item,
+		int64 Amount)
+	{
+		int64& Available = State.CentralCounts.FindOrAdd(Item);
+		const int64 Removed = FMath::Min(Amount, Available);
+		Available -= Removed;
+		return Amount - Removed;
+	}
+
+	static bool ConsumeVirtualItem(
+		FInventoryCapacityState& State,
+		const TSubclassOf<UFGItemDescriptor> Item,
+		int64 Amount)
+	{
+		if (State.bTakeFromInventoryFirst)
+		{
+			Amount = RemoveFromVirtualInventory(State, Item, Amount);
+			Amount = RemoveFromVirtualCentralStorage(State, Item, Amount);
+		}
+		else
+		{
+			Amount = RemoveFromVirtualCentralStorage(State, Item, Amount);
+			Amount = RemoveFromVirtualInventory(State, Item, Amount);
+		}
+		return Amount == 0;
+	}
+
+	static bool AddVirtualItem(
+		FInventoryCapacityState& State,
+		const TSubclassOf<UFGItemDescriptor> Item,
+		int64 Amount)
+	{
+		if (!Item || Amount <= 0) return true;
+
+		for (int32 Index = 0; Index < State.Slots.Num() && Amount > 0; ++Index)
+		{
+			FVirtualInventorySlot& Slot = State.Slots[Index];
+			if (Slot.Count <= 0 || Slot.Item.GetItemClass() != Item) continue;
+
+			const int64 Capacity = FMath::Max(
+				0,
+				State.Inventory->GetSlotSizeForItem(Index, Item, &Slot.Item));
+			const int64 Added = FMath::Min(Amount, FMath::Max<int64>(0, Capacity - Slot.Count));
+			Slot.Count += Added;
+			Amount -= Added;
+		}
+
+		for (int32 Index = 0; Index < State.Slots.Num() && Amount > 0; ++Index)
+		{
+			FVirtualInventorySlot& Slot = State.Slots[Index];
+			if (Slot.Count > 0 || !State.Inventory->IsItemAllowed(Item, Index)) continue;
+
+			FInventoryItem NewItem(Item);
+			const int64 Capacity = FMath::Max(
+				0,
+				State.Inventory->GetSlotSizeForItem(Index, Item, &NewItem));
+			if (Capacity <= 0) continue;
+
+			const int64 Added = FMath::Min(Amount, Capacity);
+			Slot.Item = MoveTemp(NewItem);
+			Slot.Count = Added;
+			Amount -= Added;
+		}
+
+		return Amount == 0;
+	}
+
+	static bool ValidateInventoryCapacity(
+		UFGWorkBench* WorkBench,
+		const TArray<FCraftStep>& Steps,
+		FString& OutFailure)
+	{
+		FInventoryCapacityState State;
+		if (!InitializeCapacityState(WorkBench, State))
+		{
+			OutFailure = TEXT("player inventory is unavailable");
+			return false;
+		}
+
+		for (const FCraftStep& Step : Steps)
+		{
+			if (!Step.Recipe || Step.Cycles <= 0) continue;
+			const TArray<FItemAmount> Ingredients =
+				UFGRecipe::GetIngredients(WorkBench, Step.Recipe);
+			const TArray<FItemAmount> Products = UFGRecipe::GetProducts(Step.Recipe);
+
+			for (int32 Cycle = 0; Cycle < Step.Cycles; ++Cycle)
+			{
+				for (const FItemAmount& Ingredient : Ingredients)
+				{
+					if (!Ingredient.ItemClass || Ingredient.Amount <= 0) continue;
+					if (!ConsumeVirtualItem(State, Ingredient.ItemClass, Ingredient.Amount))
+					{
+						OutFailure = TEXT("available crafting materials changed while checking the queue");
+						return false;
+					}
+				}
+
+				for (const FItemAmount& Product : Products)
+				{
+					if (!Product.ItemClass || Product.Amount <= 0) continue;
+					if (!AddVirtualItem(State, Product.ItemClass, Product.Amount))
+					{
+						OutFailure = FString::Printf(
+							TEXT("not enough inventory space for %s while completing the selected queue"),
+							*ItemName(Product.ItemClass));
+						return false;
+					}
+				}
+			}
+		}
+		return true;
+	}
+
 	static bool EnsureItem(
 		FPlanningState& State,
 		const FPlanningContext& Context,
@@ -600,9 +798,11 @@ namespace ExactCraft
 		const int32 RequestedOutput,
 		TArray<FCraftStep>& OutSteps,
 		FString& OutFailure,
-		TArray<FMissingMaterial>* OutMissingMaterials = nullptr)
+		TArray<FMissingMaterial>* OutMissingMaterials = nullptr,
+		bool* OutInsufficientInventorySpace = nullptr)
 	{
 		if (OutMissingMaterials) OutMissingMaterials->Reset();
+		if (OutInsufficientInventorySpace) *OutInsufficientInventorySpace = false;
 		const TSubclassOf<UFGRecipe> RootRecipe = WorkBench->GetCurrentRecipe();
 		const TArray<FItemAmount> Products = UFGRecipe::GetProducts(RootRecipe);
 		if (Products.IsEmpty() || !Products[0].ItemClass || Products[0].Amount <= 0)
@@ -661,6 +861,15 @@ namespace ExactCraft
 		}
 
 		ConsolidateAndOrderSteps(State, Context);
+		if (!ValidateInventoryCapacity(WorkBench, State.Steps, OutFailure))
+		{
+			if (OutInsufficientInventorySpace &&
+				OutFailure.StartsWith(TEXT("not enough inventory space")))
+			{
+				*OutInsufficientInventorySpace = true;
+			}
+			return false;
+		}
 		OutSteps = MoveTemp(State.Steps);
 		return !OutSteps.IsEmpty();
 	}
@@ -789,7 +998,8 @@ namespace ExactCraft
 		const int32 RequestedOutput,
 		const bool bAutomaticRun)
 	{
-		if (!IsValid(WorkBench) || !WorkBench->GetCurrentRecipe() || RequestedOutput <= 0) return;
+		if (!IsWorkbenchUsedByLocalPlayer(WorkBench) ||
+			!WorkBench->GetCurrentRecipe() || RequestedOutput <= 0) return;
 		FCraftRequest& Request = Requests.FindOrAdd(WorkBench);
 		if (Request.bActive) return;
 
@@ -823,12 +1033,19 @@ namespace ExactCraft
 	bool CanCompleteRequestedOutput(
 		UFGWorkBench* WorkBench,
 		const int32 RequestedOutput,
-		TArray<FMissingMaterial>* OutMissingMaterials)
+		TArray<FMissingMaterial>* OutMissingMaterials,
+		bool* OutInsufficientInventorySpace)
 	{
 		if (!IsValid(WorkBench) || RequestedOutput <= 0) return false;
 		TArray<FCraftStep> Steps;
 		FString Failure;
-		return BuildPlan(WorkBench, RequestedOutput, Steps, Failure, OutMissingMaterials);
+		return BuildPlan(
+			WorkBench,
+			RequestedOutput,
+			Steps,
+			Failure,
+			OutMissingMaterials,
+			OutInsufficientInventorySpace);
 	}
 
 	int64 GetAvailableItemCount(
@@ -899,6 +1116,7 @@ namespace ExactCraft
 			}
 
 			UFGWorkBench* WorkBench = It.Value().Get();
+			if (!IsWorkbenchUsedByLocalPlayer(WorkBench)) continue;
 			FCraftRequest* Request = IsValid(WorkBench) ? Requests.Find(WorkBench) : nullptr;
 			UExactCraftControlRow* Row = Request ? Request->ControlRow.Get() : nullptr;
 			if (!IsValid(Row) || Row->GetRequestedOutput() <= 0) continue;
@@ -912,7 +1130,7 @@ namespace ExactCraft
 	{
 		const TWeakObjectPtr<UFGWorkBench>* WeakWorkBench = ButtonWorkBenches.Find(Button);
 		UFGWorkBench* WorkBench = WeakWorkBench ? WeakWorkBench->Get() : nullptr;
-		if (!IsValid(WorkBench)) return false;
+		if (!IsWorkbenchUsedByLocalPlayer(WorkBench)) return false;
 
 		FCraftRequest* Request = Requests.Find(WorkBench);
 		if (Request && Request->bActive)
@@ -940,6 +1158,7 @@ namespace ExactCraft
 	{
 		const TWeakObjectPtr<UFGWorkBench>* WeakWorkBench = ButtonWorkBenches.Find(Button);
 		UFGWorkBench* WorkBench = WeakWorkBench ? WeakWorkBench->Get() : nullptr;
+		if (!IsWorkbenchUsedByLocalPlayer(WorkBench)) return false;
 		FCraftRequest* Request = IsValid(WorkBench) ? Requests.Find(WorkBench) : nullptr;
 		if (!Request || !Request->bActive || Request->bAutomaticRun) return false;
 
@@ -950,7 +1169,8 @@ namespace ExactCraft
 
 	bool ShouldForceCanProduce(UFGWorkBench* WorkBench, const TSubclassOf<UFGRecipe> Recipe)
 	{
-		if (!IsValid(WorkBench) || !Recipe || Recipe != WorkBench->GetCurrentRecipe()) return false;
+		if (!IsWorkbenchUsedByLocalPlayer(WorkBench) ||
+			!Recipe || Recipe != WorkBench->GetCurrentRecipe()) return false;
 		FCraftRequest* Request = Requests.Find(WorkBench);
 		if (!Request) return false;
 		if (Request->bActive)
@@ -997,11 +1217,11 @@ namespace ExactCraft
 			}
 			FCraftRequest& Request = Iterator.Value();
 			if (!Request.bActive) continue;
-			if (!IsValid(WorkBench->GetWorkBenchUser()))
+			if (!IsWorkbenchUsedByLocalPlayer(WorkBench))
 			{
-				// Closing a workbench cancels vanilla manual crafting. Exact Craft must
-				// also discard its entire dependency request rather than leaving it
-				// paused to resume unexpectedly the next time the bench is opened.
+				// Closing a workbench or transferring it to a remote player cancels
+				// local manual crafting. Never let a stale local request continue into
+				// the inventory of the player who opened the bench next.
 				if (Request.RootRecipe && WorkBench->GetCurrentRecipe() != Request.RootRecipe)
 				{
 					Request.bInternalRecipeChange = true;
@@ -1032,7 +1252,7 @@ namespace ExactCraft
 			FCraftRequest& Request = Iterator.Value();
 			UExactCraftControlRow* Row = Request.ControlRow.Get();
 			if (!IsValid(Row) || Row->GetRequestedOutput() <= 0 ||
-				!IsValid(WorkBench->GetWorkBenchUser()))
+				!IsWorkbenchUsedByLocalPlayer(WorkBench))
 			{
 				continue;
 			}

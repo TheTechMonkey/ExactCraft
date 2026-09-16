@@ -637,6 +637,7 @@ void UExactCraftControlRow::RefreshRequestedOutputAffordability(const bool bForc
 		AffordabilityRequestedOutput = RequestedOutput;
 		AffordabilityRecipe = IsValid(WorkBench) ? WorkBench->GetCurrentRecipe() : nullptr;
 		AffordabilityResourcesHash = 0;
+		bInsufficientInventorySpace = false;
 		MissingMaterialsLabel.Reset();
 		MissingMaterialsDetails.Reset();
 		RefreshNativeCraftAmountVisibility();
@@ -656,7 +657,7 @@ void UExactCraftControlRow::RefreshRequestedOutputAffordability(const bool bForc
 	AffordabilityResourcesHash = ResourcesHash;
 	TArray<ExactCraft::FMissingMaterial> MissingMaterials;
 	bRequestedOutputAffordable = ExactCraft::CanCompleteRequestedOutput(
-		WorkBench, RequestedOutput, &MissingMaterials);
+		WorkBench, RequestedOutput, &MissingMaterials, &bInsufficientInventorySpace);
 	MissingMaterialsLabel.Reset();
 	MissingMaterialsDetails.Reset();
 	if (!bRequestedOutputAffordable && !MissingMaterials.IsEmpty())
@@ -684,6 +685,13 @@ void UExactCraftControlRow::RefreshRequestedOutputAffordability(const bool bForc
 		MissingMaterialsDetails = FString::Printf(
 			TEXT("Missing raw materials for the selected amount:\n%s"),
 			*FString::Join(Lines, TEXT("\n")));
+	}
+	else if (!bRequestedOutputAffordable && bInsufficientInventorySpace)
+	{
+		MissingMaterialsLabel = TEXT("NOT ENOUGH INVENTORY SPACE");
+		MissingMaterialsDetails = TEXT(
+			"There is not enough free inventory space to complete the selected queue. "
+			"Make room in your inventory and try again.");
 	}
 	RefreshMaximumLabel();
 	RefreshNativeCraftAmountVisibility();
@@ -717,7 +725,9 @@ void UExactCraftControlRow::RefreshNativeCraftAmountVisibility()
 	{
 		MissingStatusLabel->SetText(bDefaultMissing
 			? LOCTEXT("DefaultCannotAfford", "Can't afford Recipe")
-			: LOCTEXT("ExactMissingIngredients", "Missing Ingredients"));
+			: bInsufficientInventorySpace
+				? LOCTEXT("ExactInventoryFull", "Inventory Full")
+				: LOCTEXT("ExactMissingIngredients", "Missing Ingredients"));
 	}
 	MissingInfoContainer->SetVisibility(
 		bExactMissing ? ESlateVisibility::Visible : ESlateVisibility::Collapsed);

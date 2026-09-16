@@ -156,6 +156,7 @@ private:
 	bool bUpdatingControls = false;
 	bool bRequestActive = false;
 	bool bRequestedOutputAffordable = false;
+	bool bInsufficientInventorySpace = false;
 	FString MissingMaterialsLabel;
 	FString MissingMaterialsDetails;
 };

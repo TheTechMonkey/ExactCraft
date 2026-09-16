@@ -20,7 +20,8 @@ namespace ExactCraft
     bool CanCompleteRequestedOutput(
 		UFGWorkBench* WorkBench,
 		int32 RequestedOutput,
-		TArray<FMissingMaterial>* OutMissingMaterials = nullptr);
+		TArray<FMissingMaterial>* OutMissingMaterials = nullptr,
+		bool* OutInsufficientInventorySpace = nullptr);
     int64 GetAvailableItemCount(
 		UFGWorkBench* WorkBench,
 		TSubclassOf<UFGItemDescriptor> Item);
